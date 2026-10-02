@@ -396,15 +396,32 @@ function selectClip(clip) {
   $("#player").hidden = false;
   $("#clipTitle").value = clip.name;
   $("#clipMeta").innerHTML = `<span>${esc(clip.game)}</span><span>${fmtSize(clip.size)}</span><span>${fmtDate(clip.modified)}</span>`;
-  video.src = convertFileSrc(clip.path);
+  video.removeAttribute("src");
   S.dur = 0; S.start = 0; S.end = 0;
   disarmDelete();
   renderList();
   renderTrim();
   const path = clip.path;
   invoke("probe_clip", { path }).then((c) => {
-    if (S.sel && S.sel.path === path) { S.srcCodec = c; renderExport(); }
-  }).catch(() => {});
+    if (!S.sel || S.sel.path !== path) return;
+    S.srcCodec = c;
+    renderExport();
+    loadVideo(path, c);
+  }).catch(() => { if (S.sel && S.sel.path === path) loadVideo(path, ""); });
+}
+
+// The embedded WebView2 often can't decode HEVC (black picture), so those clips play from an
+// H.264 copy made on demand; the file itself is untouched.
+async function loadVideo(path, codec) {
+  if (codec !== "hevc") { video.src = convertFileSrc(path); return; }
+  toast("Preparing a preview of this HEVC clip…");
+  try {
+    const proxy = await invoke("playback_proxy", { path });
+    if (S.sel && S.sel.path === path) video.src = convertFileSrc(proxy);
+  } catch (e) {
+    toast(String(e), true);
+    if (S.sel && S.sel.path === path) video.src = convertFileSrc(path);
+  }
 }
 
 function closeClip() {
@@ -504,7 +521,7 @@ title.addEventListener("change", async () => {
     toast(String(e), true);
     title.value = S.sel.name;
   }
-  video.src = convertFileSrc(S.sel.path);
+  loadVideo(S.sel.path, S.srcCodec);
   loadClips();
 });
 

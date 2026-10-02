@@ -302,6 +302,48 @@ async fn probe_clip(eng: Eng<'_>, path: String) -> Result<String, String> {
         .map_err(e2s)
 }
 
+/// An H.264 copy of a clip for the viewer: the embedded WebView2 can't always decode HEVC (the
+/// picture stays black). Cached under `<clips_dir>\.playback` (inside the asset scope), made on
+/// demand; the original is never touched. Returns the proxy's path.
+#[tauri::command]
+async fn playback_proxy(eng: Eng<'_>, path: String) -> Result<String, String> {
+    let src = inside_clips_dir(&eng, &path)?;
+    let (ffmpeg, dir) = {
+        let c = eng.cfg.lock();
+        (c.ffmpeg.clone(), std::path::PathBuf::from(&c.clips_dir).join(".playback"))
+    };
+    tauri::async_runtime::spawn_blocking(move || -> Result<String, String> {
+        std::fs::create_dir_all(&dir).map_err(e2s)?;
+        let meta = std::fs::metadata(&src).map_err(e2s)?;
+        let stamp = meta.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map_or(0, |d| d.as_secs());
+        let stem = src.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+        let out = dir.join(format!("{stem}_{stamp}_{}.mp4", meta.len()));
+        if out.is_file() {
+            return Ok(out.to_string_lossy().into_owned());
+        }
+        let tmp = out.with_extension("part.mp4");
+        let mut c = ff::cmd_low(&ffmpeg);
+        c.args(["-hide_banner", "-y", "-i"]).arg(&src).args([
+            "-vf", "scale=-2:'min(1080,ih)',fps=60", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "26",
+            "-pix_fmt", "yuv420p", "-g", "30", "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart",
+        ]).arg(&tmp);
+        ff::run(c).map_err(|e| format!("{e:#}"))?;
+        std::fs::rename(&tmp, &out).map_err(e2s)?;
+        // Keep the cache small: drop the oldest copies beyond 8.
+        if let Ok(rd) = std::fs::read_dir(&dir) {
+            let mut files: Vec<_> = rd.flatten().filter_map(|e| Some((e.metadata().ok()?.modified().ok()?, e.path()))).collect();
+            files.sort();
+            let extra = files.len().saturating_sub(8);
+            for (_, p) in files.into_iter().take(extra) {
+                let _ = std::fs::remove_file(p);
+            }
+        }
+        Ok(out.to_string_lossy().into_owned())
+    })
+    .await
+    .map_err(e2s)?
+}
+
 #[tauri::command]
 async fn save_clip_now(eng: Eng<'_>) -> Result<String, String> {
     let eng = eng.inner().clone();
@@ -590,6 +632,7 @@ fn main() {
             delete_exported_raws,
             memory_info,
             probe_clip,
+            playback_proxy,
             save_clip_now,
             export_clip,
             ffmpeg_info,

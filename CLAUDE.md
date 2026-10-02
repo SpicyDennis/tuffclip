@@ -65,3 +65,5 @@ The key design goal is near-zero idle cost; several choices follow from it:
 - **Hotkeys** (default Alt+F10, plus an optional `hotkey2`) are registered via `tauri-plugin-global-shortcut` (`set_hotkeys`); `save_config` re-registers them and rolls back to the old ones on failure. `tray.rs` owns the tray icon (red dot while recording) and tooltip, updated from `Engine::update_tray`.
 
 - Renamed from Clipr to TUFFClip in 0.9.0: crate/exe `tuffclip`, data dir `%LOCALAPPDATA%\TUFFClip` (`config::data_dir` renames an old `Clipr` dir once), startup Run key `TUFFClip` (the old `Clipr` key is deleted on the next toggle). Existing `clips_dir` settings keep their saved path; only the default for new installs is `Videos\TUFFClip`. The logo is `src-tauri/icons/icon.png` (and `ui/logo.png` for the top bar); localStorage keys stay `clipr.*` so saved preferences survive.
+
+- 0.12.1: WebView2 may not decode HEVC (black viewer). `selectClip` probes the codec and, for `hevc`, `loadVideo` plays an H.264 copy from `playback_proxy` (`<clips_dir>\.playback`, newest 8 kept, made with libx264 ultrafast at idle priority). Trim/export still use the original file.
