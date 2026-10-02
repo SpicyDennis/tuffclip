@@ -24,6 +24,8 @@ UI follows the suite-design skill (Slate & Tally). theme.css / menu.js are the s
 
 ## Recent behaviour worth knowing
 
+- Distribution: `build\Clipr.exe` is meant to be handed out alone. `.cargo/config.toml` links the MSVC CRT statically (`+crt-static`) so no VC++ Redistributable is needed; WebView2 is the only external runtime (preinstalled on current Windows 10/11). Don't add files that must sit next to the exe.
+
 - Games mode defaults to `capture_method: window`: ffmpeg's `gfxcapture` (Windows Graphics Capture) records only the game's HWND, so windows in front never show; resizes are letterboxed (`resize_mode=scale_aspect`) instead of restarting, and `fps=` pads the variable frame rate. `capture_method: display` is the old path: ddagrab cropped to the window's client rect (`recorder::crop_for`), where a changed rect must hold still 3 s before ffmpeg restarts (`Engine::resolve_crop`). Desktop mode is always ddagrab.
 - Several listed games running: `Engine::update_tracked` picks the one with the most raw clips and then sticks to it (switching restarts the buffer); the top-bar selector calls `set_target`.
 - When the game closes, `Engine::keep_or_discard` stops ffmpeg but keeps the buffer (`Held`: RAM `Arc<RamBuf>` or the segment dir) for `hold_minutes`; `save_clip_inner` falls back to it. A new recording drops it.
