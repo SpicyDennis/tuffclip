@@ -180,7 +180,7 @@ $("#expLow").addEventListener("change", (e) => store.set("expLow", e.target.chec
 })();
 
 document.addEventListener("keydown", (e) => {
-  if ($("#confirm").open) return; // the dialog handles its own Esc / Enter
+  if ($("#confirm").open || document.querySelector("dialog[open]")) return; // dialogs handle their own Esc / Enter
   if (e.ctrlKey && e.key === ",") { e.preventDefault(); showView("settings"); }
   else if (e.ctrlKey && e.key.toLowerCase() === "q") { e.preventDefault(); invoke("quit_app"); }
   else if (e.key === "Escape" && !e.defaultPrevented) {
@@ -1186,8 +1186,33 @@ $("#autostart").addEventListener("change", async (e) => {
 });
 
 // ---- games
+// popups: the lists live in dialogs, with a search box that hides rows that don't match
+function filterRows(box, q) {
+  q = q.trim().toLowerCase();
+  let shown = 0;
+  box.querySelectorAll(".game").forEach((r) => {
+    const hit = !q || r.textContent.toLowerCase().includes(q) || [...r.querySelectorAll("input.name")].some((i) => i.value.toLowerCase().includes(q));
+    r.hidden = !hit;
+    if (hit) shown++;
+  });
+  box.querySelector(".no-match")?.remove();
+  if (q && !shown && box.querySelector(".game")) box.insertAdjacentHTML("beforeend", `<div class="games-empty no-match">Nothing matches.</div>`);
+}
+function setupListDialog(openBtn, dlg, search, box) {
+  $(openBtn).addEventListener("click", () => {
+    $(search).value = "";
+    filterRows($(box), "");
+    $(dlg).showModal();
+  });
+  $(search).addEventListener("input", (e) => filterRows($(box), e.target.value));
+  $(dlg).addEventListener("click", (e) => { if (e.target.dataset.close !== undefined || e.target === $(dlg)) $(dlg).close(); });
+}
+setupListDialog("#openGames", "#gamesDlg", "#gamesSearch", "#gameList");
+setupListDialog("#openIgnored", "#ignoredDlg", "#ignoredSearch", "#ignoredList");
+
 function renderGames() {
   const box = $("#gameList");
+  $("#gamesCount").textContent = `${S.cfg.games.length} listed`;
   if (box.contains(document.activeElement)) return; // don't yank the field being edited
   const games = S.cfg.games;
   if (!games.length) {
@@ -1208,6 +1233,7 @@ function renderGames() {
       </div>`
     )
     .join("");
+  filterRows(box, $("#gamesSearch").value);
 }
 $("#gameList").addEventListener("input", (e) => {
   const row = e.target.closest(".game");
@@ -1265,6 +1291,8 @@ function renderIgnored() {
   box.innerHTML = list.length
     ? list.map((x, i) => `<div class="game ignored" data-i="${i}"><span class="exe" title="${esc(x)}">${esc(x)}</span><button class="btn sm ghost" data-k="unhide">Show again</button></div>`).join("")
     : `<div class="games-empty">Nothing hidden.</div>`;
+  $("#ignoredCount").textContent = `${list.length} hidden`;
+  filterRows(box, $("#ignoredSearch").value);
 }
 $("#ignoredList").addEventListener("click", async (e) => {
   if (e.target.dataset.k !== "unhide") return;

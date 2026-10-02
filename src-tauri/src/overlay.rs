@@ -1,4 +1,4 @@
-//! The "recording" indicator: one small, dim, click-through dot in a corner of the recorded
+//! The "recording" indicator: one small, clearly visible, click-through dot in a corner of the recorded
 //! window. It lives on its own tiny thread that only moves a 12 px window, so it costs nothing.
 use crate::config::Indicator;
 use crate::win;
@@ -17,10 +17,12 @@ use windows::Win32::UI::WindowsAndMessaging::{
     WS_EX_TRANSPARENT, WS_POPUP,
 };
 
-const DOT: i32 = 12;
-const MARGIN: i32 = 14;
+const DOT: i32 = 22;
+const MARGIN: i32 = 16;
+/// How opaque the resting dot is (0-255).
+const ALPHA: u8 = 215;
 /// Size of the dot while it flashes to confirm a save, and how long the flash lasts.
-const BIG: i32 = 28;
+const BIG: i32 = 44;
 const FLASH: Duration = Duration::from_millis(1400);
 
 static FLASH_AT: Mutex<Option<(Instant, bool)>> = Mutex::new(None);
@@ -113,7 +115,7 @@ fn run() {
         ) else {
             return;
         };
-        let _ = SetLayeredWindowAttributes(hwnd, COLORREF(0), 110, LWA_ALPHA);
+        let _ = SetLayeredWindowAttributes(hwnd, COLORREF(0), ALPHA, LWA_ALPHA);
         SetWindowRgn(hwnd, CreateEllipticRgn(0, 0, DOT + 1, DOT + 1), true);
 
         let red = CreateSolidBrush(COLORREF(0x005c_67e5));
@@ -151,7 +153,7 @@ fn run() {
             if want != look {
                 let brush = if want == 1 { green } else { red };
                 SetClassLongPtrW(hwnd, GCLP_HBRBACKGROUND, brush.0 as isize);
-                let _ = SetLayeredWindowAttributes(hwnd, COLORREF(0), if want == 0 { 110 } else { 255 }, LWA_ALPHA);
+                let _ = SetLayeredWindowAttributes(hwnd, COLORREF(0), if want == 0 { ALPHA } else { 255 }, LWA_ALPHA);
                 let _ = InvalidateRect(hwnd, None, true);
                 look = want;
                 shown = None;

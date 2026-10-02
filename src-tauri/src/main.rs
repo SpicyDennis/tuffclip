@@ -416,6 +416,87 @@ pub(crate) fn show_main(app: &AppHandle) {
 
 // ---------------------------------------------------------------------- main
 
+/// Backup for the global shortcuts: while something is recording, poll the keys directly, so the
+/// clip hotkey still works when the registered shortcut is swallowed (another app or a game that
+/// grabs the keyboard, a window of ours open but behind). A press seen by both only saves once.
+fn start_key_poll(app: AppHandle) {
+    use windows::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
+    fn vk(name: &str) -> Option<i32> {
+        let n = name.to_ascii_uppercase();
+        if let Some(f) = n.strip_prefix('F').and_then(|d| d.parse::<i32>().ok()) {
+            return (1..=24).contains(&f).then_some(0x6F + f);
+        }
+        if n.len() == 1 {
+            let c = n.as_bytes()[0];
+            if c.is_ascii_alphanumeric() {
+                return Some(c as i32);
+            }
+        }
+        Some(match n.as_str() {
+            "SPACE" => 0x20,
+            "ENTER" => 0x0D,
+            "TAB" => 0x09,
+            "INSERT" => 0x2D,
+            "DELETE" => 0x2E,
+            "HOME" => 0x24,
+            "END" => 0x23,
+            "PAGEUP" => 0x21,
+            "PAGEDOWN" => 0x22,
+            "ARROWLEFT" => 0x25,
+            "ARROWUP" => 0x26,
+            "ARROWRIGHT" => 0x27,
+            "ARROWDOWN" => 0x28,
+            _ => return None,
+        })
+    }
+    /// (ctrl, alt, shift, super, key)
+    fn parse(s: &str) -> Option<(bool, bool, bool, bool, i32)> {
+        let (mut c, mut a, mut sh, mut su, mut key) = (false, false, false, false, None);
+        for p in s.split('+').map(str::trim).filter(|p| !p.is_empty()) {
+            match p.to_ascii_lowercase().as_str() {
+                "ctrl" | "control" | "commandorcontrol" | "cmdorctrl" => c = true,
+                "alt" | "option" => a = true,
+                "shift" => sh = true,
+                "super" | "meta" | "cmd" | "command" | "win" => su = true,
+                _ => key = vk(p),
+            }
+        }
+        key.map(|k| (c, a, sh, su, k))
+    }
+    fn down(vk: i32) -> bool {
+        unsafe { GetAsyncKeyState(vk) as u16 & 0x8000 != 0 }
+    }
+    std::thread::spawn(move || {
+        let mut held = [false; 2];
+        loop {
+            std::thread::sleep(std::time::Duration::from_millis(40));
+            let Some(eng) = app.try_state::<Arc<Engine>>() else { continue };
+            let (a, b) = {
+                let c = eng.cfg.lock();
+                (c.hotkey.clone(), c.hotkey2.clone())
+            };
+            let st = eng.status();
+            if !st.recording && st.held_until_ms.is_none() {
+                held = [false; 2];
+                std::thread::sleep(std::time::Duration::from_millis(400));
+                continue;
+            }
+            for (i, hk) in [a, b].iter().enumerate() {
+                let Some((c, al, sh, su, k)) = parse(hk) else { continue };
+                let now = down(k)
+                    && down(0x11) == c
+                    && down(0x12) == al
+                    && down(0x10) == sh
+                    && (down(0x5B) || down(0x5C)) == su;
+                if now && !held[i] {
+                    save_in_background(&app);
+                }
+                held[i] = now;
+            }
+        }
+    });
+}
+
 /// If the app's main thread stops answering (a hung webview, a stuck driver call), a background
 /// thread notices and restarts TUFFClip, so a frozen copy can never block you from opening it again.
 fn start_self_heal(app: AppHandle) {
@@ -530,6 +611,7 @@ fn main() {
             tray::build(app)?;
             std::thread::spawn(move || engine.run_watcher());
             start_self_heal(app.handle().clone());
+            start_key_poll(app.handle().clone());
 
             if !start_hidden {
                 show_main(app.handle());

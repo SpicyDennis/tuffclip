@@ -147,6 +147,11 @@
 .game input[type=checkbox] { width: 15px; height: 15px; }
 .game.off .name, .game.off .exe { opacity: 0.5; }
 .games-empty { color: var(--muted); }
+.list-dialog { width: min(720px, 94vw); }
+.list-dialog[open] { display: flex; flex-direction: column; gap: 10px; max-height: 86vh; }
+.dlg-head { display: flex; justify-content: space-between; align-items: center; }
+.dlg-search { width: 100%; }
+.dlg-scroll { flex: 1; min-height: 120px; overflow-y: auto; padding-right: 4px; }
 .add-row { display: flex; gap: 8px; }
 .add-row select, .add-row input { flex: 1; }
 .about-name { font: 600 18px/1.3 var(--font-display); }
