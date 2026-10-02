@@ -45,8 +45,27 @@ pub struct FfInfo {
     pub version: String,
     pub encoders: Vec<String>,
     pub ddagrab: bool,
+    pub gfxcapture: bool,
     pub scale_d3d11: bool,
     pub vp9: bool,
+}
+
+/// Whether this ffmpeg has the `gfxcapture` filter (window capture). Cached per path,
+/// since the engine asks every tick.
+pub fn has_gfxcapture(ffmpeg: &str) -> bool {
+    use std::sync::Mutex;
+    static CACHE: Mutex<Option<(String, bool)>> = Mutex::new(None);
+    let mut c = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((p, v)) = c.as_ref() {
+        if p == ffmpeg {
+            return *v;
+        }
+    }
+    let out = cmd(ffmpeg).args(["-hide_banner", "-filters"]).stdin(Stdio::null()).output();
+    let Ok(out) = out else { return true }; // ffmpeg missing: other errors will say so
+    let v = String::from_utf8_lossy(&out.stdout).contains(" gfxcapture ");
+    *c = Some((ffmpeg.to_string(), v));
+    v
 }
 
 pub fn info(ffmpeg: &str) -> FfInfo {
@@ -68,6 +87,7 @@ pub fn info(ffmpeg: &str) -> FfInfo {
             .map(|e| e.to_string())
             .collect(),
         ddagrab: filters.contains(" ddagrab "),
+        gfxcapture: filters.contains(" gfxcapture "),
         scale_d3d11: filters.contains(" scale_d3d11 "),
         vp9: encoders.contains("libvpx-vp9"),
     }

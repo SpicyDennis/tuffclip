@@ -222,7 +222,11 @@ impl Engine {
                 status.game = Some(game);
                 status.monitor = Some(mon.label.clone());
                 let geom = tracked.as_ref().and_then(|t| t.geom);
-                let window_mode = cfg.mode == CaptureMode::Games && cfg.capture_method == CaptureMethod::Window;
+                let want_window = cfg.mode == CaptureMode::Games && cfg.capture_method == CaptureMethod::Window;
+                let window_mode = want_window && crate::ff::has_gfxcapture(&cfg.ffmpeg);
+                if want_window && !window_mode && status.warn.is_none() {
+                    status.warn = Some("This FFmpeg has no gfxcapture filter, so the whole game area is recorded instead. Update FFmpeg in Settings > Advanced.".into());
+                }
                 let minimized = geom.is_some_and(|g| g.minimized);
 
                 let spec = if window_mode {

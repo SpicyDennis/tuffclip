@@ -1287,7 +1287,11 @@ async function renderFfHints() {
     $("#encHint").textContent = "";
     return;
   }
-  $("#ffHint").textContent = f.ddagrab ? f.version : `${f.version}. This build has no ddagrab filter, so screen capture won't work. Use a full build from gyan.dev or BtbN.`;
+  $("#ffHint").textContent = !f.ddagrab
+    ? `${f.version}. This build has no ddagrab filter, so screen capture won't work. Use a full build from gyan.dev or BtbN.`
+    : !f.gfxcapture
+      ? `${f.version}. No gfxcapture filter (needs FFmpeg 8 full), so games are recorded from the display instead. Use "Download FFmpeg" for a current build.`
+      : f.version;
   $("#encHint").textContent = f.encoders.length
     ? `Your FFmpeg supports: ${f.encoders.map((e) => ({ nvenc: "NVIDIA", amf: "AMD", qsv: "Intel" }[e])).join(", ")}`
     : "This FFmpeg build has no hardware encoders.";
