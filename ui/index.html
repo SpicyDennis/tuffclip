@@ -198,6 +198,7 @@
     <nav class="settings-nav" id="settingsNav">
       <button class="item active" data-group="general">General</button>
       <button class="item" data-group="capture">Capture</button>
+      <button class="item" data-group="games">Games</button>
       <button class="item" data-group="video">Video</button>
       <button class="item" data-group="audio">Audio</button>
       <button class="item" data-group="storage">Storage</button>
@@ -279,8 +280,11 @@
           <label class="check"><input type="checkbox" id="gentleSave"> Go easy on my PC while saving a clip</label>
           <p class="hint">Saving a clip runs at low priority, so it can take a moment longer instead of costing you frames. Exporting is separate: it runs at full speed unless you tick Low impact in the export area.</p>
         </div>
+      </section>
+
+      <section class="group" id="g-games">
+        <h3>Games</h3>
         <div class="field">
-          <label>Games</label>
           <p class="hint">Recording starts when one of these is running and stops when it closes. If several are open, Clipr picks the one you've clipped most; switch from the top bar. Clips are filed under the name shown here. Click a name to change it; new clips use the new name, older clips stay where they are.</p>
           <div id="gameList" class="game-list"></div>
           <div class="add-row">
