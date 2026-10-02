@@ -5,7 +5,7 @@
 //!  * exact size                            -> CPU two-pass (x264 or x265), slowest, lands closest to the target size
 //!  * .webm                                 -> always re-encoded with VP9 + Opus (.webm can't hold H.264/AAC)
 //!
-//! Exports never need to be fast, so they run at idle priority with a few threads. A long clip just takes longer.
+//! Exports run at normal priority on all cores; `low_impact` drops to idle priority with a few threads.
 use crate::config::{Config, Encoder};
 use crate::engine::sanitize_name;
 use crate::{ff, library};
@@ -75,6 +75,9 @@ pub struct ExportRequest {
     /// The clip's own total bitrate (video + audio), so we never export "bigger than native".
     #[serde(default)]
     pub src_kbps: f64,
+    /// Idle priority and fewer threads, so a running game isn't affected.
+    #[serde(default)]
+    pub low_impact: bool,
 }
 
 fn unique(p: PathBuf) -> PathBuf {
@@ -222,7 +225,7 @@ pub fn export(cfg: &Config, req: &ExportRequest, progress: impl Fn(f64, f64)) ->
     };
 
     let cores = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
-    let threads = (cores / 2).max(2).to_string();
+    let threads = if req.low_impact { (cores / 2).max(2) } else { cores }.to_string();
 
     let base = |c: &mut Command| {
         c.args(["-hide_banner", "-loglevel", "error", "-y", "-ss", &ss]);
@@ -240,14 +243,14 @@ pub fn export(cfg: &Config, req: &ExportRequest, progress: impl Fn(f64, f64)) ->
         if req.precise {
             let log = std::env::temp_dir().join(format!("clipr_2pass_{}", std::process::id()));
             let logs = log.to_string_lossy().into_owned();
-            let mut p1 = ff::cmd_low(&cfg.ffmpeg);
+            let mut p1 = ff::cmd_prio(&cfg.ffmpeg, req.low_impact);
             base(&mut p1);
             p1.args(["-map", "0:v:0", "-c:v", vcodec_cpu, "-b:v", &vb, "-threads", &threads])
                 .args(vp9_flags)
                 .args(["-pass", "1", "-passlogfile", &logs, "-an", "-f", "null", "NUL"]);
             let r1 = run_progress(p1, dur, 0.0, 0.5, &progress);
             let r = r1.and_then(|_| {
-                let mut p2 = ff::cmd_low(&cfg.ffmpeg);
+                let mut p2 = ff::cmd_prio(&cfg.ffmpeg, req.low_impact);
                 base(&mut p2);
                 p2.args(["-map", "0:v:0", "-map", "0:a?", "-c:v", vcodec_cpu, "-b:v", &vb, "-threads", &threads])
                     .args(vp9_flags)
@@ -258,7 +261,7 @@ pub fn export(cfg: &Config, req: &ExportRequest, progress: impl Fn(f64, f64)) ->
             cleanup_passlogs(&log);
             r?;
         } else {
-            let mut c = ff::cmd_low(&cfg.ffmpeg);
+            let mut c = ff::cmd_prio(&cfg.ffmpeg, req.low_impact);
             base(&mut c);
             c.args(["-map", "0:v:0", "-map", "0:a?", "-c:v", vcodec_cpu, "-b:v", &vb, "-threads", &threads])
                 .args(vp9_flags)
@@ -291,7 +294,7 @@ pub fn export(cfg: &Config, req: &ExportRequest, progress: impl Fn(f64, f64)) ->
             }
         };
 
-        let mut p1 = ff::cmd_low(&cfg.ffmpeg);
+        let mut p1 = ff::cmd_prio(&cfg.ffmpeg, req.low_impact);
         p1.current_dir(&tmp);
         base(&mut p1);
         p1.args(["-map", "0:v:0", "-c:v", vcodec_cpu, "-preset", "medium", "-threads", &threads, "-b:v", &vb])
@@ -300,7 +303,7 @@ pub fn export(cfg: &Config, req: &ExportRequest, progress: impl Fn(f64, f64)) ->
         let r1 = run_progress(p1, dur, 0.0, 0.5, &progress);
 
         let r = r1.and_then(|_| {
-            let mut p2 = ff::cmd_low(&cfg.ffmpeg);
+            let mut p2 = ff::cmd_prio(&cfg.ffmpeg, req.low_impact);
             p2.current_dir(&tmp);
             base(&mut p2);
             p2.args(["-map", "0:v:0", "-map", "0:a?", "-c:v", vcodec_cpu, "-preset", "medium", "-threads", &threads, "-b:v", &vb])
@@ -325,7 +328,7 @@ pub fn export(cfg: &Config, req: &ExportRequest, progress: impl Fn(f64, f64)) ->
     let target_bytes = req.target_mb * 1_000_000.0;
     for attempt in 0..2 {
         let vb = format!("{video_kbps}k");
-        let mut c = ff::cmd_low(&cfg.ffmpeg);
+        let mut c = ff::cmd_prio(&cfg.ffmpeg, req.low_impact);
         base(&mut c);
         c.args(["-map", "0:v:0", "-map", "0:a?", "-c:v", &enc]);
         match cfg.encoder {

@@ -159,6 +159,7 @@
               </select>
             </label>
             <label class="check"><input type="checkbox" id="expPrecise"> Exact size (slower)</label>
+            <label class="check" title="Idle priority and fewer threads: slower, but won't cost a running game frames."><input type="checkbox" id="expLow"> Low impact (use while gaming)</label>
           </div>
           <div class="export-row">
             <div class="grow"></div>
@@ -188,7 +189,7 @@
     </nav>
     <div class="settings" id="settingsScroll">
       <div class="settings-head">
-        <button class="link" id="settingsBack">← Back</button>
+        <button class="link" id="settingsBack"><svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true" style="vertical-align:-1px"><path d="M11 6H1M5 2L1 6l4 4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg> Back</button>
         <h2>Settings</h2>
         <span class="label" id="savedMsg" aria-live="polite">Saved</span>
       </div>
@@ -258,7 +259,7 @@
         </div>
         <div class="field">
           <label class="check"><input type="checkbox" id="gentleSave"> Go easy on my PC while saving a clip</label>
-          <p class="hint">Saving a clip runs at low priority, so it can take a moment longer instead of costing you frames. Exporting is separate and always runs at low priority.</p>
+          <p class="hint">Saving a clip runs at low priority, so it can take a moment longer instead of costing you frames. Exporting is separate: it runs at full speed unless you tick Low impact in the export area.</p>
         </div>
         <div class="field">
           <label>Games</label>

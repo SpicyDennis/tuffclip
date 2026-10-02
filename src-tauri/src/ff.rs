@@ -12,6 +12,11 @@ pub fn cmd(ffmpeg: &str) -> Command {
     c
 }
 
+/// `cmd_low` when `low` is set, else a normal-priority `cmd`.
+pub fn cmd_prio(ffmpeg: &str, low: bool) -> Command {
+    if low { cmd_low(ffmpeg) } else { cmd(ffmpeg) }
+}
+
 /// Like `cmd`, but at idle CPU priority so a background export never competes with a game.
 pub fn cmd_low(ffmpeg: &str) -> Command {
     const IDLE_PRIORITY_CLASS: u32 = 0x0000_0040;

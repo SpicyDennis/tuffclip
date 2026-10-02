@@ -114,6 +114,8 @@ function showView(v) {
 }
 $("#tabLibrary").addEventListener("click", () => showView("library"));
 $("#tabSettings").addEventListener("click", () => showView("settings"));
+$("#expLow").checked = store.get("expLow", false);
+$("#expLow").addEventListener("change", (e) => store.set("expLow", e.target.checked));
 $("#settingsBack").addEventListener("click", () => showView("library"));
 
 // ---- draggable top-bar tabs (File / Settings / Library); order is remembered
@@ -733,6 +735,7 @@ $("#exportBtn").addEventListener("click", async () => {
         target_kbps: S.mode === "bitrate" ? S.kbps : 0,
         height: Number($("#expRes").value),
         precise: $("#expPrecise").checked,
+        low_impact: $("#expLow").checked,
         name: S.nameTouched ? $("#expName").value.trim() : "",
         src_kbps: n.total,
       },
