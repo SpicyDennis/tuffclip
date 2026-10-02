@@ -914,7 +914,7 @@ async function renderFfHints() {
   const f = S.ff;
   $("#getFfmpeg").hidden = !!f.ok || ffBusy;
   if (!f.ok) {
-    $("#ffHint").textContent = "FFmpeg wasn't found. Download it below, or enter the full path to ffmpeg.exe.";
+    $("#ffHint").textContent = "FFmpeg wasn't found. Use the button above to download it, or enter the full path to ffmpeg.exe.";
     $("#encHint").textContent = "";
     return;
   }
