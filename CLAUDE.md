@@ -15,7 +15,7 @@ For every batch of requested changes: load the **suite-design** skill first (UI 
 Run from `src-tauri/` unless noted:
 
 - Dev with live reload: `cargo tauri dev`
-- Release build: `build.bat` in the repo root (runs `cargo tauri build --no-bundle`, copies `target\release\tuffclip.exe` to `build\TUFFClip.exe`; the cargo step goes through `build-heartbeat.ps1`, which prints "still working" every 15 s because the LTO link is silent for minutes; it does not bundle ffmpeg, the app downloads it into the data dir on first run). Needs `cargo install tauri-cli --version "^2" --locked`.
+- Release build: `build.bat` in the repo root (runs `cargo tauri build --no-bundle`, copies `target\release\tuffclip.exe` to `build\TUFFClip v0.0.0.exe`, the version read from `Cargo.toml`, older `TUFFClip*.exe` in `build` deleted; the cargo step goes through `build-heartbeat.ps1`, which prints "still working" every 15 s because the LTO link is silent for minutes; it does not bundle ffmpeg, the app downloads it into the data dir on first run). Needs `cargo install tauri-cli --version "^2" --locked`.
 - Type-check only: `cargo check`
 
 `README.md` notes the code was originally written without compiling on Windows, so expect occasional `windows`-crate (0.58) signature errors.
@@ -24,7 +24,7 @@ UI follows the suite-design skill (Slate & Tally). theme.css / menu.js are the s
 
 ## Recent behaviour worth knowing
 
-- Distribution: `build\TUFFClip.exe` is meant to be handed out alone. `.cargo/config.toml` links the MSVC CRT statically (`+crt-static`) so no VC++ Redistributable is needed; WebView2 is the only external runtime (preinstalled on current Windows 10/11). Don't add files that must sit next to the exe.
+- Distribution: `build\TUFFClip v0.0.0.exe` is meant to be handed out alone. `.cargo/config.toml` links the MSVC CRT statically (`+crt-static`) so no VC++ Redistributable is needed; WebView2 is the only external runtime (preinstalled on current Windows 10/11). Don't add files that must sit next to the exe.
 
 - Games mode defaults to `capture_method: window`: ffmpeg's `gfxcapture` (Windows Graphics Capture) records only the game's HWND, so windows in front never show; resizes are letterboxed (`resize_mode=scale_aspect`) instead of restarting, and `fps=` pads the variable frame rate. `capture_method: display` is the old path: ddagrab cropped to the window's client rect (`recorder::crop_for`), where a changed rect must hold still 3 s before ffmpeg restarts (`Engine::resolve_crop`). Desktop mode is always ddagrab.
 - Several listed games running: `Engine::update_tracked` picks the one with the most raw clips and then sticks to it (switching restarts the buffer); the top-bar selector calls `set_target`.
@@ -49,6 +49,8 @@ UI follows the suite-design skill (Slate & Tally). theme.css / menu.js are the s
 - `Config.ignored_exes` hides programs from the "Add a running app" list (`list_windows` filters them); edited in Settings > Games.
 - Self-heal (`start_self_heal` in `main.rs`): a thread pings the main thread every 10 s; if it hasn't answered for 90 s, TUFFClip relaunches itself (`--hidden --relaunch`, which waits 3 s so the single-instance hand-off doesn't hit the dying copy) and exits. Goal: a hung background instance must never stop you opening TUFFClip.
 
+- 0.13.0 capture card (Switch 2 over a USB HDMI card): the card has no passthrough and Windows lets one program open it at a time, so TUFFClip doesn't open it with ffmpeg. Instead the `capture` window (`ui/capture.html`, `show_capture`, opened from the top bar or Settings > Capture card) shows it with `getUserMedia` (picture + sound, card picked by name / `groupId`, never a mic by guess) and reports its size/fps via `capture_feed`. `Engine::update_tracked` treats that window as the game (`CAPTURE_EXE`, named `Config.capture_name`, default "Switch 2"; it wins over running games), always window-captured with `RecordSpec.force_size` so gfxcapture outputs the card's resolution whatever the window size, fps capped at the card's. Sound comes from the normal loopback. Renaming `capture_name` moves its folders like a game rename. The window is destroyed on close (`set_feed(None)`).
+
 ## Architecture
 
 The key design goal is near-zero idle cost; several choices follow from it:
@@ -66,4 +68,5 @@ The key design goal is near-zero idle cost; several choices follow from it:
 
 - Renamed from Clipr to TUFFClip in 0.9.0: crate/exe `tuffclip`, data dir `%LOCALAPPDATA%\TUFFClip` (`config::data_dir` renames an old `Clipr` dir once), startup Run key `TUFFClip` (the old `Clipr` key is deleted on the next toggle). Existing `clips_dir` settings keep their saved path; only the default for new installs is `Videos\TUFFClip`. The logo is `src-tauri/icons/icon.png` (and `ui/logo.png` for the top bar); localStorage keys stay `clipr.*` so saved preferences survive.
 
+- 0.14.0: the top-bar selector (`#targetSel`, always visible) lists "Games (automatic)", running games, and one "Desktop · <monitor>" per monitor; picking one sets `Config.mode` / `monitor` (so Settings > Capture follows) and calls `set_target`. The clip shortcut at the top right is a button opening `#hkDlg` to re-record it.
 - 0.12.1: WebView2 may not decode HEVC (black viewer). `selectClip` probes the codec and, for `hevc`, `loadVideo` plays an H.264 copy from `playback_proxy` (`<clips_dir>\.playback`, newest 8 kept, made with libx264 ultrafast at idle priority). Trim/export still use the original file.

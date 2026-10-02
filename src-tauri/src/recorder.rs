@@ -52,6 +52,8 @@ pub struct RecordSpec {
     pub crop: Option<Crop>,
     /// Capture just this window (Windows Graphics Capture) instead of a monitor, so windows in front never show.
     pub window: Option<isize>,
+    /// Window capture always outputs `src_w`×`src_h`, scaling the window to fit (capture card window).
+    pub force_size: bool,
     pub fps: u32,
     pub height: u32,
     pub bitrate_kbps: u32,
@@ -87,6 +89,7 @@ impl RecordSpec {
             src_h,
             crop,
             window: window.map(|w| w.0),
+            force_size: false,
             fps,
             height: cfg.height,
             bitrate_kbps: cfg.bitrate_kbps,
@@ -479,8 +482,10 @@ fn build_args(s: &RecordSpec, audio: Option<AudioFormat>) -> Vec<String> {
         // Window capture: only this window's pixels, however many windows are on top of it.
         // Frames only arrive when the window changes, so `fps` fills the gaps to keep a steady rate.
         // A resized window is letterboxed into the original size instead of restarting the recording.
+        // The capture card window is scaled to the card's own resolution, whatever size the window is.
+        let size = if s.force_size { format!("width={}:height={}", s.src_w, s.src_h) } else { "width=-2:height=-2".into() };
         format!(
-            "gfxcapture=hwnd={hwnd}:capture_cursor={}:display_border=0:max_framerate={}:width=-2:height=-2:resize_mode=scale_aspect,fps={}",
+            "gfxcapture=hwnd={hwnd}:capture_cursor={}:display_border=0:max_framerate={}:{size}:resize_mode=scale_aspect,fps={}",
             s.draw_mouse as u8, s.fps, s.fps
         )
     } else {

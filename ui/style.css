@@ -8,7 +8,9 @@
 .quick label { display: flex; align-items: center; gap: 7px; }
 .quick select { color: var(--text); padding: 3px 8px; }
 /* reminder of the clip shortcut, far right */
-.hk { display: flex; align-items: center; color: var(--muted); font-size: 13px; white-space: nowrap; }
+.hk { display: flex; align-items: center; color: var(--muted); font-size: 13px; white-space: nowrap; background: none; border: 1px solid transparent; border-radius: var(--radius); padding: 3px 6px; cursor: pointer; }
+.hk:hover { border-color: var(--line-hover); }
+#hkDlgInput { margin-top: 10px; width: 100%; }
 .hk kbd { margin-left: 6px; color: var(--text); }
 .topright { margin-left: 0; }
 

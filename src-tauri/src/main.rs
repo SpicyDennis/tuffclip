@@ -57,6 +57,9 @@ fn apply_config(app: &AppHandle, eng: &Engine, mut cfg: Config) -> Result<(), St
             }
         }
     }
+    if old.capture_name != cfg.capture_name {
+        library::rename_game(&cfg, &old.capture_name, &cfg.capture_name);
+    }
     let changed = old != cfg;
     *eng.cfg.lock() = cfg;
     if changed {
@@ -214,6 +217,30 @@ fn preview_start(app: AppHandle, eng: Eng<'_>) -> Result<(), String> {
 #[tauri::command]
 fn preview_stop() {
     preview::stop();
+}
+
+/// Open (or bring forward) the capture card window.
+#[tauri::command]
+fn open_capture(app: AppHandle) {
+    show_capture(&app);
+}
+
+/// The capture window reports the card's picture size and frame rate (all None = no picture).
+#[tauri::command]
+fn capture_feed(eng: Eng<'_>, width: Option<u32>, height: Option<u32>, fps: Option<u32>) {
+    let feed = match (width, height) {
+        (Some(w), Some(h)) => Some((w, h, fps.filter(|f| *f > 0).unwrap_or(60))),
+        _ => None,
+    };
+    eng.set_feed(feed);
+}
+
+/// Switch the calling window in or out of fullscreen (None = toggle). Returns the new state.
+#[tauri::command]
+fn set_fullscreen(window: tauri::WebviewWindow, on: Option<bool>) -> bool {
+    let on = on.unwrap_or_else(|| !window.is_fullscreen().unwrap_or(false));
+    let _ = window.set_fullscreen(on);
+    on
 }
 
 #[tauri::command]
@@ -456,6 +483,25 @@ pub(crate) fn show_main(app: &AppHandle) {
     });
 }
 
+/// The capture card window: shows the card's live picture and sound so you can play on it,
+/// and while it is open the recorder captures it like a game. Created on demand, destroyed on close.
+pub(crate) fn show_capture(app: &AppHandle) {
+    let app = app.clone();
+    std::thread::spawn(move || {
+        if let Some(w) = app.get_webview_window("capture") {
+            let _ = w.show();
+            let _ = w.unminimize();
+            let _ = w.set_focus();
+            return;
+        }
+        let _ = WebviewWindowBuilder::new(&app, "capture", WebviewUrl::App("capture.html".into()))
+            .title("TUFFClip · Capture card")
+            .inner_size(1280.0, 720.0)
+            .min_inner_size(480.0, 270.0)
+            .build();
+    });
+}
+
 // ---------------------------------------------------------------------- main
 
 /// Backup for the global shortcuts: while something is recording, poll the keys directly, so the
@@ -584,6 +630,14 @@ fn main() {
                 .build(),
         )
         .on_window_event(|window, event| {
+            if window.label() == "capture" {
+                if let WindowEvent::Destroyed = event {
+                    if let Some(eng) = window.app_handle().try_state::<Arc<Engine>>() {
+                        eng.set_feed(None);
+                    }
+                }
+                return;
+            }
             if window.label() != "main" {
                 return;
             }
@@ -624,6 +678,9 @@ fn main() {
             list_windows,
             preview_start,
             preview_stop,
+            open_capture,
+            capture_feed,
+            set_fullscreen,
             list_clips,
             delete_clip,
             reveal_clip,

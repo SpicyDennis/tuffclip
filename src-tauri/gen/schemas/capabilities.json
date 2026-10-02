@@ -1,1 +1,1 @@
-{"default":{"identifier":"default","description":"Permissions for the main window","local":true,"windows":["main"],"permissions":["core:default"]}}
+{"default":{"identifier":"default","description":"Permissions for the main and capture card windows","local":true,"windows":["main","capture"],"permissions":["core:default"]}}

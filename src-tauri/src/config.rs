@@ -113,6 +113,8 @@ pub struct Config {
     pub indicator: Indicator,
     /// Programs hidden from the "Add a running app" list (exe names).
     pub ignored_exes: Vec<String>,
+    /// Clips recorded from the capture card window are filed under this name.
+    pub capture_name: String,
 }
 
 impl Default for Config {
@@ -151,6 +153,7 @@ impl Default for Config {
             capture_method: CaptureMethod::Window,
             indicator: Indicator::TopRight,
             ignored_exes: Vec::new(),
+            capture_name: "Switch 2".into(),
         }
     }
 }
@@ -222,6 +225,10 @@ impl Config {
             *e = e.trim().to_string();
             !e.is_empty() && seen.insert(e.to_lowercase())
         });
+        self.capture_name = self.capture_name.trim().to_string();
+        if self.capture_name.is_empty() {
+            self.capture_name = "Switch 2".into();
+        }
         self.games.retain(|g| !g.exe.trim().is_empty());
         for g in &mut self.games {
             g.exe = g.exe.trim().to_string();

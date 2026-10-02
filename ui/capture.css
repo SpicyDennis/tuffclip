@@ -1,0 +1,23 @@
+/* Capture card window. The shared look lives in theme.css (don't edit it per app). */
+body { background: #000; cursor: default; }
+body.idle { cursor: none; }
+
+/* the card's picture, letterboxed to fit the window */
+#feed { position: fixed; inset: 0; width: 100%; height: 100%; object-fit: contain; background: #000; }
+
+.cap-empty { position: fixed; inset: 0; background: var(--bg); padding: 0 24px; }
+.cap-empty .btn { margin-top: 14px; }
+
+/* controls float over the top edge and hide while the mouse is still */
+.cap-bar {
+  position: fixed; top: 0; left: 0; right: 0;
+  display: flex; align-items: center; gap: 18px; flex-wrap: wrap;
+  padding: 8px 14px; background: var(--panel); border-bottom: 1px solid var(--line);
+  transition: transform 0.18s ease-out;
+}
+body.idle .cap-bar { transform: translateY(-100%); }
+.cap-field { display: flex; align-items: center; gap: 7px; color: var(--muted); font-size: 13px; white-space: nowrap; }
+.cap-field select { color: var(--text); padding: 3px 8px; max-width: 260px; }
+.cap-field input[type=range] { width: 110px; }
+.cap-bar .status { font-size: 13px; }
+.cap-bar .btn kbd { color: var(--text); }

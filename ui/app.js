@@ -205,7 +205,8 @@ function updateStatusText() {
   } else if (held) {
     const left = Math.max(0, Math.round((st.held_until_ms - Date.now()) / 1000));
     text = `${st.game} closed · buffer kept ${Math.floor(left / 60)}:${String(left % 60).padStart(2, "0")} · ${hotkeyText()} still saves`;
-  } else if (st.game && st.region) text = `Waiting for ${st.game}'s window`;
+  } else if (st.game && st.region === "waiting for the capture card") text = "Capture card window open · waiting for the picture";
+  else if (st.game && st.region) text = `Waiting for ${st.game}'s window`;
   else if (S.cfg?.mode === "games") text = S.cfg.games.some((g) => g.enabled) ? "Waiting for a game" : "Add a game in Settings to start";
   else text = "Idle";
   $("#statusText").textContent = text;
@@ -213,20 +214,42 @@ function updateStatusText() {
 }
 setInterval(() => { if (S.status?.held_until_ms && !S.status.recording) updateStatusText(); }, 1000);
 
-function renderTarget(st) {
+// Top-bar choice: games (automatic or a running one) or a desktop (one per monitor).
+// Picking one switches Settings > Games / Desktop and the monitor too.
+function renderTarget(st = S.status) {
+  if (!st || !S.cfg) return;
+  if (!S.monitors) {
+    S.monitors = [];
+    invoke("list_monitors").then((m) => { S.monitors = m || []; S.targetSig = ""; renderTarget(); }).catch(() => {});
+  }
   const choices = st.choices || [];
-  $("#targetWrap").hidden = choices.length < 2;
-  if (choices.length < 2) { S.targetSig = ""; return; }
   const sel = $("#targetSel");
-  const sig = choices.map((c) => `${c.exe}|${c.name}|${c.clips}`).join(",");
+  const desktop = S.cfg.mode === "desktop";
+  const sig = [desktop, choices.map((c) => `${c.exe}|${c.name}|${c.clips}`).join(","), S.monitors.map((m) => m.id + m.label).join(",")].join("#");
   if (sig !== S.targetSig) {
-    sel.innerHTML = choices.map((c) => `<option value="${esc(c.exe)}">${esc(c.name)} · ${plural(c.clips, "clip")}</option>`).join("");
+    const opts = [`<option value="g:">Games (automatic)</option>`];
+    for (const c of choices) opts.push(`<option value="g:${esc(c.exe)}">${esc(c.name)} · ${plural(c.clips, "clip")}</option>`);
+    for (const m of S.monitors) opts.push(`<option value="d:${esc(m.id)}">Desktop · ${esc(m.label)}</option>`);
+    sel.innerHTML = opts.join("");
     S.targetSig = sig;
   }
-  if (document.activeElement !== sel && st.target) sel.value = st.target;
+  if (document.activeElement === sel) return;
+  if (desktop) sel.value = "d:" + (S.cfg.monitor || S.monitors[0]?.id || "");
+  else sel.value = choices.length > 1 && st.target ? "g:" + st.target : "g:";
 }
-$("#targetWrap").title = "Several of your games are running. TUFFClip records the one you've clipped most; pick another to switch (this restarts its buffer).";
-$("#targetSel").addEventListener("change", (e) => invoke("set_target", { exe: e.target.value }).catch((x) => toast(String(x), true)));
+$("#targetWrap").title = "What TUFFClip records: your games (it picks the one you've clipped most, or choose a running one; this restarts its buffer) or a whole desktop.";
+$("#targetSel").addEventListener("change", (e) => {
+  const v = e.target.value;
+  e.target.blur();
+  if (v.startsWith("d:")) {
+    invoke("set_target", { exe: null }).catch(() => {});
+    setCfg({ mode: "desktop", monitor: v.slice(2) });
+    return;
+  }
+  const exe = v.slice(2) || null;
+  if (S.cfg.mode !== "games") setCfg({ mode: "games" });
+  invoke("set_target", { exe }).catch((x) => toast(String(x), true));
+});
 
 function renderStatus(st) {
   S.status = st;
@@ -975,21 +998,21 @@ function renderHeight() {
   const opts = [];
   let cur = S.cfg.height;
   if (m) {
-    opts.push([0, `${m.width}×${m.height}`]);
+    opts.push([0, `${m.width}×${m.height} (native)`]);
     const hs = [1440, 1080, 720, 480];
     if (cur && cur < m.height && !hs.includes(cur)) hs.push(cur);
     hs.filter((h) => h < m.height).sort((a, b) => b - a)
       .forEach((h) => opts.push([h, `${even((m.width * h) / m.height)}×${h}`, !canScale]));
     if (cur >= m.height) cur = 0; // as big as the display is the same as no scaling
   } else {
-    opts.push([0, "Same as the display"], [1440, "1440p"], [1080, "1080p"], [720, "720p"]);
+    opts.push([0, "Native"], [1440, "1440p"], [1080, "1080p"], [720, "720p"]);
   }
   $$("#height, #qHeight").forEach((el) => fillSelect(el, opts, cur));
 }
 
 function renderFps() {
   const hz = monitorHz();
-  const opts = [[0, hz ? `${hz} fps (display)` : "Match my display"]];
+  const opts = [[0, hz ? `${hz} fps (native)` : "Native"]];
   const list = [30, 60, 120, 144, 165, 240];
   if (hz && !list.includes(hz)) list.push(hz);
   if (S.cfg.fps && !list.includes(S.cfg.fps)) list.push(S.cfg.fps);
@@ -1062,6 +1085,10 @@ function fillControls(force = false) {
     ? "The X closes this window; TUFFClip keeps recording from the tray."
     : "The X quits TUFFClip completely, which also stops recording.";
   set("#monitorSel", (el) => { if (c.monitor) el.value = c.monitor; });
+  set("#captureName", (el) => (el.value = c.capture_name));
+  $("#cardHint").textContent = c.mode === "games"
+    ? "The window shows the card's picture and plays its sound so you can play on it. While it's open, TUFFClip records it at the card's own resolution (fullscreen looks sharpest) and your clip shortcut saves from it."
+    : "The window shows the card's picture and plays its sound so you can play on it. You record a monitor all the time, so put the window on that monitor; clips made while it's focused are filed under the name below.";
   set("#drawMouse", (el) => (el.checked = c.draw_mouse));
   set("#indicator", (el) => (el.value = c.indicator));
   set("#startHidden", (el) => (el.checked = c.start_hidden));
@@ -1103,6 +1130,8 @@ function fillControls(force = false) {
   renderGames();
   renderIgnored();
   $("#hkKey").textContent = c.hotkey;
+  set("#hkDlgInput", (el) => { if (!el.classList.contains("listening")) el.value = c.hotkey; });
+  renderTarget();
   $("#customRateUnit").textContent = unitLabel();
 }
 
@@ -1147,6 +1176,16 @@ function numField(el, min, max) {
   return Math.min(max, Math.max(min, v));
 }
 
+onChange("#captureName", (el) => {
+  const name = el.value.trim();
+  if (!name) { el.value = S.cfg.capture_name; return; }
+  if (name === S.cfg.capture_name) return;
+  if (folderName(name) !== folderName(S.cfg.capture_name)) S.renamedFrom.push(S.cfg.capture_name);
+  return { capture_name: name };
+});
+const openCapture = () => invoke("open_capture").catch((e) => toast(String(e), true));
+$("#openCapture").addEventListener("click", openCapture);
+$("#openCapture2").addEventListener("click", openCapture);
 onChange("#drawMouse", (el) => ({ draw_mouse: el.checked }));
 onChange("#indicator", (el) => ({ indicator: el.value }));
 onChange("#startHidden", (el) => ({ start_hidden: el.checked }));
@@ -1349,7 +1388,7 @@ $("#manualExe").addEventListener("keydown", (e) => { if (e.key === "Enter") $("#
 
 // ---- shortcuts: click, then press the keys. The second one is optional (Backspace clears it).
 $("#hotkey2").placeholder = "Not set";
-function bindHotkey(el, key, optional) {
+function bindHotkey(el, key, optional, errEl = $("#hotkeyErr"), done = null) {
   const other = () => (key === "hotkey" ? S.cfg.hotkey2 : S.cfg.hotkey) || "";
   let prev = "";
   el.addEventListener("focus", () => { prev = S.cfg[key] || ""; el.value = "Press keys…"; el.classList.add("listening"); });
@@ -1378,19 +1417,28 @@ function bindHotkey(el, key, optional) {
     el.blur();
     if (other() && combo.toLowerCase() === other().toLowerCase()) {
       el.value = prev;
-      $("#hotkeyErr").textContent = "That's already your other shortcut. Pick a different one.";
-      $("#hotkeyErr").hidden = false;
+      errEl.textContent = "That's already your other shortcut. Pick a different one.";
+      errEl.hidden = false;
       return;
     }
-    $("#hotkeyErr").hidden = true;
+    errEl.hidden = true;
     if (combo !== S.cfg[key]) {
       S.cfg[key] = combo;
       flush(); // a taken shortcut is reported (and reverted) straight away
     }
+    done?.();
   });
 }
 bindHotkey($("#hotkey"), "hotkey", false);
 bindHotkey($("#hotkey2"), "hotkey2", true);
+bindHotkey($("#hkDlgInput"), "hotkey", false, $("#hkDlgErr"), () => $("#hkDlg").close());
+$("#hkRemind").addEventListener("click", () => {
+  $("#hkDlgErr").hidden = true;
+  $("#hkDlgInput").value = S.cfg.hotkey;
+  $("#hkDlg").showModal();
+  $("#hkDlgInput").focus();
+});
+$("#hkDlg").addEventListener("click", (e) => { if (e.target.dataset.close !== undefined || e.target === $("#hkDlg")) $("#hkDlg").close(); });
 
 // ---- ffmpeg
 let ffBusy = false;

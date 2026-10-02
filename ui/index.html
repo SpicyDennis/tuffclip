@@ -15,20 +15,21 @@
     <button class="tab active" id="tabLibrary" data-tab="library" role="tab">Library</button>
     <button class="tab" id="tabPreview" data-tab="preview" role="tab">Preview</button>
   </nav>
+  <button class="tab" id="openCapture" title="Open the capture card window to play and record a console (Switch 2) over HDMI">Capture card</button>
   <div class="quick" id="quick" role="group" aria-label="Quick settings">
     <label>Clip length <select id="qClip" aria-label="Clip length"></select></label>
     <label>Resolution <select id="qHeight" aria-label="Resolution"></select></label>
     <label>Frame rate <select id="qFps" aria-label="Frame rate"></select></label>
   </div>
   <div class="topright">
-    <label class="target" id="targetWrap" hidden>Recording
-      <select id="targetSel" aria-label="Which running game to record"></select>
+    <label class="target" id="targetWrap">Recording
+      <select id="targetSel" aria-label="What to record: a running game or a desktop"></select>
     </label>
     <div class="buf" id="buf" hidden></div>
     <div class="status" id="status" title="">
       <span class="tally" aria-hidden="true"></span><span id="statusText">Starting</span>
     </div>
-    <div class="hk" id="hkRemind" title="Your clip shortcut. Change it in Settings, Shortcuts.">Clip <kbd id="hkKey"></kbd></div>
+    <button class="hk" id="hkRemind" title="Your clip shortcut. Click to change it.">Clip <kbd id="hkKey"></kbd></button>
   </div>
 </header>
 
@@ -214,6 +215,7 @@
     <nav class="settings-nav" id="settingsNav">
       <button class="item active" data-group="general">General</button>
       <button class="item" data-group="games">Games</button>
+      <button class="item" data-group="card">Capture card</button>
       <button class="item" data-group="capture">Capture</button>
       <button class="item" data-group="audio">Audio</button>
       <button class="item" data-group="storage">Storage</button>
@@ -270,6 +272,20 @@
           <label>Hidden programs</label>
           <p class="hint">Programs you hid from the running-apps list. Show one again to be able to pick it.</p>
           <div class="row"><button class="btn sm" id="openIgnored">Hidden programs…</button><span class="unit" id="ignoredCount"></span></div>
+        </div>
+      </section>
+
+      <section class="group" id="g-card">
+        <h3>Capture card</h3>
+        <p class="hint">Play and record a console, like a Switch 2, through a USB HDMI capture card.</p>
+        <div class="field">
+          <div class="row"><button class="btn sm" id="openCapture2">Open capture card window</button></div>
+          <p class="hint" id="cardHint"></p>
+        </div>
+        <div class="field">
+          <label for="captureName">File clips under</label>
+          <input id="captureName" spellcheck="false" maxlength="60" />
+          <p class="hint">Clips from the card get their own folder, like a game. Renaming moves your existing card clips too.</p>
         </div>
       </section>
 
@@ -457,6 +473,13 @@
     </div>
   </section>
 </main>
+
+<dialog class="dialog" id="hkDlg">
+  <div class="dlg-head"><h3>Clip shortcut</h3><button class="btn sm ghost" data-close>Close</button></div>
+  <p class="hint">Click the box, then press the keys you want. Esc cancels.</p>
+  <input id="hkDlgInput" class="hotkey" readonly aria-label="Clip shortcut">
+  <p class="hint err" id="hkDlgErr" hidden></p>
+</dialog>
 
 <dialog class="dialog list-dialog" id="gamesDlg">
   <div class="dlg-head"><h3>Game list</h3><button class="btn sm ghost" data-close>Close</button></div>

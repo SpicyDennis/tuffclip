@@ -65,11 +65,22 @@ echo.
 echo   Compiled in %SPENT%.
 echo.
 
-echo [4/%TOTAL%] Copying TUFFClip.exe to the build folder...
+rem The version comes from Cargo.toml (the single source of truth); the exe is named TUFFClip v0.0.0.exe.
+set "VER="
+for /f "tokens=2 delims==" %%V in ('findstr /b /c:"version = " "%ROOT%src-tauri\Cargo.toml"') do if not defined VER set "VER=%%~V"
+set "VER=%VER: =%"
+set "VER=%VER:"=%"
+if not defined VER (
+  echo   ERROR: Could not read the version from src-tauri\Cargo.toml.
+  goto :fail
+)
+set "EXE=TUFFClip v%VER%.exe"
+echo [4/%TOTAL%] Copying %EXE% to the build folder...
 if not exist "%OUT%" mkdir "%OUT%"
-copy /y "%ROOT%src-tauri\target\release\tuffclip.exe" "%OUT%\TUFFClip.exe" >nul
+del /q "%OUT%\TUFFClip*.exe" >nul 2>nul
+copy /y "%ROOT%src-tauri\target\release\tuffclip.exe" "%OUT%\%EXE%" >nul
 if errorlevel 1 (
-  echo   ERROR: Could not copy TUFFClip.exe. Is TUFFClip still running? Quit it from the tray and retry.
+  echo   ERROR: Could not copy %EXE%. Is TUFFClip still running? Quit it from the tray and retry.
   goto :fail
 )
 echo   OK.
@@ -78,7 +89,7 @@ echo.
 call :elapsed T0 SPENT
 echo.
 echo === Done in %SPENT% ===
-echo Output: "%OUT%\TUFFClip.exe"
+echo Output: "%OUT%\%EXE%"
 echo FFmpeg is not part of the build. TUFFClip offers to download it into its own data
 echo folder the first time you open it, so the exe can live anywhere.
 explorer "%OUT%"

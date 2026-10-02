@@ -14,8 +14,11 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_global_shortcut::GlobalShortcutExt;
+
+/// Stands in for an exe name when the thing being recorded is TUFFClip's own capture card window.
+pub const CAPTURE_EXE: &str = "<capture card>";
 
 /// One game that is running and could be recorded.
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -84,6 +87,8 @@ pub struct Engine {
     crop_pending: Mutex<Option<(Option<Crop>, Instant)>>,
     last_save: Mutex<Option<Instant>>,
     hotkey_err: Mutex<Option<String>>,
+    /// The capture card picture shown in the capture window: (width, height, fps).
+    feed: Mutex<Option<(u32, u32, u32)>>,
     app: AppHandle,
 }
 
@@ -145,6 +150,7 @@ impl Engine {
             crop_pending: Mutex::new(None),
             last_save: Mutex::new(None),
             hotkey_err: Mutex::new(None),
+            feed: Mutex::new(None),
             app,
         }
     }
@@ -175,6 +181,32 @@ impl Engine {
     /// Pick which running game to record (None = back to the automatic choice).
     pub fn set_target(&self, exe: Option<String>) {
         *self.manual.lock() = exe.map(|e| e.to_lowercase());
+    }
+
+    /// The capture window started showing the card (or stopped: None).
+    pub fn set_feed(&self, feed: Option<(u32, u32, u32)>) {
+        *self.feed.lock() = feed.filter(|f| f.0 >= 64 && f.1 >= 64);
+    }
+
+    /// The capture card window, while it is open.
+    fn capture_hwnd(&self) -> Option<isize> {
+        let w = self.app.get_webview_window("capture")?;
+        if !w.is_visible().unwrap_or(false) {
+            return None;
+        }
+        w.hwnd().ok().map(|h| h.0 as isize)
+    }
+
+    fn capture_tracked(&self, cfg: &Config, hwnd: isize) -> Tracked {
+        let geom = win::window_geometry(hwnd);
+        Tracked {
+            pid: std::process::id(),
+            exe: CAPTURE_EXE.into(),
+            name: cfg.capture_name.clone(),
+            hwnd,
+            hmon: geom.map(|g| g.hmon).unwrap_or(0),
+            geom,
+        }
     }
 
     pub fn memory(&self) -> win::MemInfo {
@@ -230,7 +262,8 @@ impl Engine {
                 status.game = Some(game);
                 status.monitor = Some(mon.label.clone());
                 let geom = tracked.as_ref().and_then(|t| t.geom);
-                let want_window = cfg.mode == CaptureMode::Games && cfg.capture_method == CaptureMethod::Window;
+                let card = cfg.mode == CaptureMode::Games && tracked.as_ref().is_some_and(|t| t.exe == CAPTURE_EXE);
+                let want_window = cfg.mode == CaptureMode::Games && (card || cfg.capture_method == CaptureMethod::Window);
                 let window_mode = want_window && crate::ff::has_gfxcapture(&cfg.ffmpeg);
                 if want_window && !window_mode && status.warn.is_none() {
                     status.warn = Some("This FFmpeg has no gfxcapture filter, so the whole game area is recorded instead. Update FFmpeg in Settings > Advanced.".into());
@@ -238,7 +271,7 @@ impl Engine {
                 let minimized = geom.is_some_and(|g| g.minimized);
 
                 let spec = if window_mode {
-                    self.window_spec(&cfg, &mon, tracked.as_ref().map(|t| t.hwnd), geom)
+                    self.window_spec(&cfg, &mon, tracked.as_ref().map(|t| t.hwnd), geom, card)
                 } else {
                     let (cand, min) = match (&cfg.mode, geom) {
                         (CaptureMode::Games, Some(g)) => (recorder::crop_for(&mon, &g), g.minimized),
@@ -252,6 +285,7 @@ impl Engine {
                     Some(spec) => {
                         status.fps = spec.fps;
                         status.region = Some(match (spec.window, spec.crop) {
+                            (Some(_), _) if card => format!("{}×{} capture card", spec.src_w, spec.src_h),
                             (Some(_), _) => format!("{}×{} window", spec.src_w, spec.src_h),
                             (None, Some(c)) => format!("{}×{} window", c.w, c.h),
                             _ => "whole display".into(),
@@ -268,6 +302,7 @@ impl Engine {
                             Err(e) => status.error = Some(format!("{e:#}")),
                         }
                     }
+                    None if card => status.region = Some("waiting for the capture card".into()),
                     None => status.region = Some("waiting for the game window".into()),
                 }
             }
@@ -301,9 +336,27 @@ impl Engine {
     }
 
     /// The capture spec for window mode. `None` while there is no usable window yet.
-    fn window_spec(&self, cfg: &Config, mon: &MonitorInfo, hwnd: Option<isize>, geom: Option<WinGeom>) -> Option<RecordSpec> {
+    /// `card`: it is the capture card window, recorded at the card's own size and frame rate.
+    fn window_spec(&self, cfg: &Config, mon: &MonitorInfo, hwnd: Option<isize>, geom: Option<WinGeom>, card: bool) -> Option<RecordSpec> {
         let hwnd = hwnd?;
         let running = self.recorder.lock().spec().cloned();
+        if card {
+            // Nothing to record until the window shows the card's picture.
+            let (w, h, fps) = (*self.feed.lock())?;
+            let mut s = RecordSpec::new(cfg, mon, None, Some((hwnd, even_down(w), even_down(h))));
+            s.force_size = true;
+            if let Some(cur) = running.filter(|c| c.window == Some(hwnd)) {
+                s.adapter = cur.adapter;
+                s.output = cur.output;
+                if cfg.fps == 0 {
+                    s.fps = cur.fps;
+                }
+            }
+            // A 60 fps console recorded at 144 fps would only store copies of frames.
+            s.fps = s.fps.min(fps.clamp(24, 240));
+            s.apply_auto_bitrate(cfg);
+            return Some(s);
+        }
         if let Some(cur) = running.filter(|c| c.window == Some(hwnd)) {
             // Already capturing this window: a resize or a move to another monitor must not
             // restart the recording (that would empty the buffer), so keep its size and GPU.
@@ -358,6 +411,12 @@ impl Engine {
     fn update_tracked(&self, cfg: &Config) -> (Option<Tracked>, Vec<Choice>) {
         if cfg.mode == CaptureMode::Desktop {
             return (self.update_tracked_focus(cfg), Vec::new());
+        }
+        // An open capture card window is something you opened to play on: it wins over games.
+        if let Some(hwnd) = self.capture_hwnd() {
+            let t = self.capture_tracked(cfg, hwnd);
+            *self.tracked.lock() = Some(t.clone());
+            return (Some(t), Vec::new());
         }
         let exes: HashSet<String> = cfg.games.iter().filter(|g| g.enabled).map(|g| g.exe.to_lowercase()).collect();
         let running = if exes.is_empty() { Vec::new() } else { win::running_games(&exes) };
@@ -419,14 +478,21 @@ impl Engine {
 
     /// Desktop mode: remember the last focused listed game so clips are filed under it.
     fn update_tracked_focus(&self, cfg: &Config) -> Option<Tracked> {
+        let card = self.capture_hwnd();
         let mut t = self.tracked.lock();
         if let Some(fg) = win::foreground() {
-            if let Some(g) = cfg.games.iter().find(|g| g.enabled && g.exe.eq_ignore_ascii_case(&fg.exe)) {
+            if card == Some(fg.hwnd) {
+                *t = Some(self.capture_tracked(cfg, fg.hwnd));
+            } else if let Some(g) = cfg.games.iter().find(|g| g.enabled && g.exe.eq_ignore_ascii_case(&fg.exe)) {
                 *t = Some(Tracked { pid: fg.pid, exe: g.exe.clone(), name: g.name.clone(), hwnd: fg.hwnd, hmon: fg.hmon, geom: None });
             }
         }
         if let Some(cur) = t.as_mut() {
-            let listed = cfg.games.iter().any(|g| g.enabled && g.name == cur.name);
+            let listed = if cur.exe == CAPTURE_EXE {
+                card == Some(cur.hwnd)
+            } else {
+                cfg.games.iter().any(|g| g.enabled && g.name == cur.name)
+            };
             if !listed || !win::process_alive(cur.pid) {
                 *t = None;
             } else if let Some(g) = win::window_geometry(cur.hwnd) {

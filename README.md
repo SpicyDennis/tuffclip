@@ -36,7 +36,7 @@ Double-click **`build.bat`** in the project folder. It installs the Tauri CLI if
 ```
 TUFFClip\
   build\
-    TUFFClip.exe     <- run this
+    TUFFClip v0.0.0.exe     <- run this (the number is the version)
   src-tauri\
   ui\
   build.bat
@@ -58,6 +58,12 @@ Files go to `Videos\TUFFClip\Raw\<Game>\` and `Videos\TUFFClip\Exports\<Game>\`.
 Settings and `ffmpeg.log` live in `%LOCALAPPDATA%\TUFFClip\`.
 
 The tray icon gets a red dot while recording (amber while a closed game's buffer is still saveable); hover it for what is being recorded. If several of your games are running, TUFFClip records the one you've clipped most; switch from the top bar.
+
+### Capture card (Switch 2 and other consoles)
+
+Plug a USB HDMI capture card (e.g. the Guermok USB 3.0 one) into a blue USB 3 port and the console's dock into its HDMI input. Click **Capture card** in the top bar (or Settings > Capture card). The window shows the card's live picture and plays its sound, so you play on it; move the mouse to reach the card / sound / volume / fullscreen controls (F11 or double-click for fullscreen). While the window is open TUFFClip records it at the card's own resolution and frame rate (1080p60 for that card), and the clip hotkey saves as usual. Clips are filed under *Switch 2* (rename it in Settings > Capture card).
+
+Close OBS or any other app using the card first: Windows lets only one program use a capture card at a time. The first time, Windows or WebView2 may ask to allow camera access (capture cards count as cameras).
 
 ### Export modes
 
@@ -103,4 +109,5 @@ src-tauri/src/
   config.rs    settings (JSON)
   ff.rs        ffmpeg helpers and capability check
 ui/            index.html, style.css, app.js (no framework, no build step)
+               capture.html/.css/.js: the capture card window
 ```
