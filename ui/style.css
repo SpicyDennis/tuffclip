@@ -138,9 +138,11 @@
 
 .game-list { display: flex; flex-direction: column; gap: 6px; }
 .game {
-  display: grid; grid-template-columns: auto 1fr 1fr auto; gap: 10px; align-items: center;
+  display: grid; grid-template-columns: auto 1fr 1fr auto auto; gap: 10px; align-items: center;
   background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 6px 8px;
 }
+.game select { font-size: 13px; padding: 4px 7px; }
+.ignored { grid-template-columns: 1fr auto; }
 .game .exe { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .game input[type=checkbox] { width: 15px; height: 15px; }
 .game.off .name, .game.off .exe { opacity: 0.5; }
@@ -155,4 +157,11 @@
 .tabs .dragging { background: var(--raised); color: var(--text); cursor: grabbing; }
 
 /* brand logo (replaces the shared amber ring mark) */
-.brand-logo { width: 22px; height: 22px; display: block; }
+.brand-logo { width: 32px; height: 32px; display: block; image-rendering: pixelated; }
+
+/* ---------------------------------------------------------------- preview */
+.preview { display: flex; flex-direction: column; gap: 14px; max-width: 1100px; margin: 0 auto; }
+.pv-frame { background: #000; border-radius: var(--radius-lg); overflow: hidden; aspect-ratio: 16 / 9; position: relative; display: grid; place-items: center; }
+.pv-frame img { width: 100%; height: 100%; object-fit: contain; display: block; }
+.pv-frame .empty { height: auto; padding: 0 24px; }
+.pv-head .meta { flex-wrap: wrap; }

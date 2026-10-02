@@ -6,6 +6,8 @@ mod engine;
 mod export;
 mod ff;
 mod library;
+mod overlay;
+mod preview;
 mod recorder;
 mod tray;
 mod win;
@@ -195,8 +197,23 @@ fn list_monitors() -> Vec<win::MonitorInfo> {
 }
 
 #[tauri::command]
-fn list_windows() -> Vec<win::AppWindow> {
-    win::list_windows()
+fn list_windows(eng: Eng<'_>) -> Vec<win::AppWindow> {
+    let ignored: Vec<String> = eng.cfg.lock().ignored_exes.iter().map(|e| e.to_lowercase()).collect();
+    let mut v = win::list_windows();
+    v.retain(|w| !ignored.contains(&w.exe.to_lowercase()));
+    v
+}
+
+/// Start the live preview of what is being recorded.
+#[tauri::command]
+fn preview_start(app: AppHandle, eng: Eng<'_>) -> Result<(), String> {
+    let spec = eng.spec().ok_or("Nothing is being recorded right now")?;
+    preview::start(&app, &spec).map_err(e2s)
+}
+
+#[tauri::command]
+fn preview_stop() {
+    preview::stop();
 }
 
 #[tauri::command]
@@ -456,6 +473,7 @@ fn main() {
                         app.exit(0);
                     }
                 }
+                WindowEvent::Destroyed => preview::stop(),
                 WindowEvent::Resized(_) => {
                     if eng.cfg.lock().minimize_to_tray && window.is_minimized().unwrap_or(false) {
                         let w = window.clone();
@@ -481,6 +499,8 @@ fn main() {
             set_target,
             list_monitors,
             list_windows,
+            preview_start,
+            preview_stop,
             list_clips,
             delete_clip,
             reveal_clip,

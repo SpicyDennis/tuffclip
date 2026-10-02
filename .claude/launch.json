@@ -1,0 +1,17 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "clipr-ui",
+      "runtimeExecutable": "python",
+      "runtimeArgs": ["-m", "http.server", "5173", "--directory", "ui"],
+      "port": 5173
+    },
+    {
+      "name": "clipr-mock",
+      "runtimeExecutable": "python",
+      "runtimeArgs": ["-m", "http.server", "5174", "--directory", "C:\\Users\\danfi\\AppData\\Local\\Temp\\claude\\C--Users-danfi-Desktop-clipr\\100f716c-0dd5-40aa-9eca-35d025c7b793\\scratchpad\\mock"],
+      "port": 5174
+    }
+  ]
+}

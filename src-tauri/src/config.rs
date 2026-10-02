@@ -41,12 +41,26 @@ pub enum CaptureMethod {
     /// Record the whole monitor (cropped to the game's window if it isn't fullscreen).
     Display,
 }
+/// Where the small "recording" dot sits on the captured window (or Off).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Indicator {
+    Off,
+    TopLeft,
+    TopRight,
+    BottomLeft,
+    BottomRight,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct GameEntry {
     pub exe: String,
     pub name: String,
     #[serde(default = "yes")]
     pub enabled: bool,
+    /// This game's own indicator choice; None follows the global setting.
+    #[serde(default)]
+    pub indicator: Option<Indicator>,
 }
 
 fn yes() -> bool {
@@ -95,6 +109,10 @@ pub struct Config {
     /// Minimizing the window hides it to the tray.
     pub minimize_to_tray: bool,
     pub capture_method: CaptureMethod,
+    /// Where the recording dot sits (games can override it).
+    pub indicator: Indicator,
+    /// Programs hidden from the "Add a running app" list (exe names).
+    pub ignored_exes: Vec<String>,
 }
 
 impl Default for Config {
@@ -131,6 +149,8 @@ impl Default for Config {
             close_to_tray: true,
             minimize_to_tray: false,
             capture_method: CaptureMethod::Window,
+            indicator: Indicator::TopRight,
+            ignored_exes: Vec::new(),
         }
     }
 }
@@ -197,6 +217,11 @@ impl Config {
         if self.ffmpeg.trim().is_empty() {
             self.ffmpeg = "ffmpeg".into();
         }
+        let mut seen = std::collections::HashSet::new();
+        self.ignored_exes.retain_mut(|e| {
+            *e = e.trim().to_string();
+            !e.is_empty() && seen.insert(e.to_lowercase())
+        });
         self.games.retain(|g| !g.exe.trim().is_empty());
         for g in &mut self.games {
             g.exe = g.exe.trim().to_string();

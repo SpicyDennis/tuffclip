@@ -111,12 +111,16 @@ function showView(v) {
   S.view = v;
   $("#view-library").hidden = v !== "library";
   $("#view-settings").hidden = v !== "settings";
+  $("#view-preview").hidden = v !== "preview";
   $("#tabLibrary").classList.toggle("active", v === "library");
   $("#tabSettings").classList.toggle("active", v === "settings");
+  $("#tabPreview").classList.toggle("active", v === "preview");
   if (v === "settings") openSettings(); else stopMemPoll();
+  if (v === "preview") startPreview(); else stopPreview();
 }
 $("#tabLibrary").addEventListener("click", () => showView("library"));
 $("#tabSettings").addEventListener("click", () => showView("settings"));
+$("#tabPreview").addEventListener("click", () => showView("preview"));
 $("#expLow").checked = store.get("expLow", false);
 $("#expLow").addEventListener("change", (e) => store.set("expLow", e.target.checked));
 
@@ -128,6 +132,7 @@ $("#expLow").addEventListener("change", (e) => store.set("expLow", e.target.chec
   try {
     const saved = JSON.parse(localStorage.getItem(KEY) || "[]");
     saved.forEach((id) => { const el = bar.querySelector(`[data-tab="${id}"]`); if (el) bar.appendChild(el); });
+    items().filter((el) => !saved.includes(el.dataset.tab)).forEach((el) => bar.appendChild(el)); // newer tabs go last
   } catch {}
   const save = () => {
     try { localStorage.setItem(KEY, JSON.stringify(items().map((el) => el.dataset.tab))); } catch {}
@@ -241,12 +246,66 @@ function renderStatus(st) {
     buf.hidden = true;
   }
 
+  if (pv.on) previewStatus();
+
   const warn = st.warn || "";
   if (warn && warn !== S.warn) toast(warn, true);
   S.warn = warn;
   $("#hotkeyErr").hidden = !warn || S.view !== "settings";
   if (warn) $("#hotkeyErr").textContent = warn;
 }
+
+// ------------------------------------------------------------------ preview
+// A live view of what is recorded. The capture process only runs while this tab is open and visible.
+const pv = { on: false, sig: "", frames: 0, retry: 0 };
+const pvSig = (st) => (st?.recording ? [st.game, st.region, st.fps].join("|") : "");
+
+function pvShow(title, sub) {
+  $("#pvImg").hidden = true;
+  $("#pvEmpty").hidden = false;
+  $("#pvEmptyTitle").textContent = title;
+  $("#pvEmptySub").textContent = sub || "";
+}
+function pvInfo() {
+  const st = S.status;
+  const rec = !!st?.recording;
+  $("#pvTitle").textContent = rec ? `Recording ${st.game || "the desktop"}` : "Nothing is being recorded";
+  $("#pvMeta").innerHTML = rec
+    ? [st.window_title && `<span>Window: ${esc(st.window_title)}</span>`, st.region && `<span>${esc(st.region)}</span>`, `<span>${st.fps} fps</span>`].filter(Boolean).join("")
+    : "";
+}
+async function startPreview() {
+  pv.on = true;
+  pv.frames = 0;
+  pv.sig = pvSig(S.status);
+  pvInfo();
+  if (!S.status?.recording) {
+    pvShow("Nothing is being recorded.", S.cfg?.mode === "games" ? "Start one of your games and its window shows up here." : "Recording starts as soon as FFmpeg is ready.");
+    invoke("preview_stop").catch(() => {});
+    return;
+  }
+  pvShow("Connecting…", "");
+  try { await invoke("preview_start"); }
+  catch (e) { pvShow("Couldn't start the preview.", String(e)); }
+}
+function stopPreview() {
+  if (!pv.on) return;
+  pv.on = false;
+  clearTimeout(pv.retry);
+  $("#pvImg").removeAttribute("src");
+  invoke("preview_stop").catch(() => {});
+}
+// follow the recording: another game or region means a new capture
+function previewStatus() {
+  pvInfo();
+  const sig = pvSig(S.status);
+  if (sig !== pv.sig && !document.hidden) startPreview();
+}
+document.addEventListener("visibilitychange", () => {
+  if (S.view !== "preview") return;
+  if (document.hidden) { pv.on = false; clearTimeout(pv.retry); invoke("preview_stop").catch(() => {}); }
+  else startPreview();
+});
 
 // ------------------------------------------------------------------ library
 async function loadClips() {
@@ -987,6 +1046,7 @@ function fillControls(force = false) {
     : "The X quits TUFFClip completely, which also stops recording.";
   set("#monitorSel", (el) => { if (c.monitor) el.value = c.monitor; });
   set("#drawMouse", (el) => (el.checked = c.draw_mouse));
+  set("#indicator", (el) => (el.value = c.indicator));
   set("#startHidden", (el) => (el.checked = c.start_hidden));
   set("#closeToTray", (el) => (el.checked = c.close_to_tray));
   set("#minToTray", (el) => (el.checked = c.minimize_to_tray));
@@ -1024,6 +1084,7 @@ function fillControls(force = false) {
   renderFps();
   renderHeight();
   renderGames();
+  renderIgnored();
   $("#hkKey").textContent = c.hotkey;
   $("#customRateUnit").textContent = unitLabel();
 }
@@ -1070,6 +1131,7 @@ function numField(el, min, max) {
 }
 
 onChange("#drawMouse", (el) => ({ draw_mouse: el.checked }));
+onChange("#indicator", (el) => ({ indicator: el.value }));
 onChange("#startHidden", (el) => ({ start_hidden: el.checked }));
 onChange("#closeToTray", (el) => ({ close_to_tray: el.checked }));
 onChange("#minToTray", (el) => ({ minimize_to_tray: el.checked }));
@@ -1138,6 +1200,10 @@ function renderGames() {
         <input type="checkbox" data-k="enabled" ${g.enabled ? "checked" : ""} title="Record this game">
         <input class="name" data-k="name" value="${esc(g.name)}" aria-label="Name shown on clips">
         <span class="exe" title="${esc(g.exe)}">${esc(g.exe)}</span>
+        <select data-k="indicator" aria-label="Recording indicator for this game" title="Recording indicator for this game">
+          ${[["", "Indicator: default"], ["off", "Indicator: off"], ["top_left", "Top left"], ["top_right", "Top right"], ["bottom_left", "Bottom left"], ["bottom_right", "Bottom right"]]
+            .map(([v, l]) => `<option value="${v}"${(g.indicator || "") === v ? " selected" : ""}>${l}</option>`).join("")}
+        </select>
         <button class="btn sm ghost" data-k="remove">Remove</button>
       </div>`
     )
@@ -1156,8 +1222,14 @@ $("#gameList").addEventListener("input", (e) => {
 // a new name is applied when you leave the field; the game's clips move to it
 $("#gameList").addEventListener("change", (e) => {
   const row = e.target.closest(".game");
-  if (!row || e.target.dataset.k !== "name") return;
+  if (!row) return;
   const g = S.cfg.games[Number(row.dataset.i)];
+  if (e.target.dataset.k === "indicator") {
+    g.indicator = e.target.value || null;
+    schedule(150);
+    return;
+  }
+  if (e.target.dataset.k !== "name") return;
   const name = e.target.value.trim();
   if (!name) { e.target.value = g.name; return; }
   if (name === g.name) return;
@@ -1181,10 +1253,35 @@ function addGame(exe) {
     toast(`${exe} is already in the list`);
     return;
   }
-  S.cfg.games.push({ exe, name: exe.replace(/\.exe$/i, ""), enabled: true });
+  S.cfg.games.push({ exe, name: exe.replace(/\.exe$/i, ""), enabled: true, indicator: null });
   renderGames();
   schedule(150);
 }
+
+// ---- hidden programs: kept out of the running-apps list until you show them again
+function renderIgnored() {
+  const box = $("#ignoredList");
+  const list = S.cfg.ignored_exes || [];
+  box.innerHTML = list.length
+    ? list.map((x, i) => `<div class="game ignored" data-i="${i}"><span class="exe" title="${esc(x)}">${esc(x)}</span><button class="btn sm ghost" data-k="unhide">Show again</button></div>`).join("")
+    : `<div class="games-empty">Nothing hidden.</div>`;
+}
+$("#ignoredList").addEventListener("click", async (e) => {
+  if (e.target.dataset.k !== "unhide") return;
+  S.cfg.ignored_exes.splice(Number(e.target.closest(".game").dataset.i), 1);
+  renderIgnored();
+  await flush();
+  refreshRunning();
+});
+$("#hideRunning").addEventListener("click", async () => {
+  const sel = $("#runningSel");
+  if (!sel.value) return;
+  S.cfg.ignored_exes = [...(S.cfg.ignored_exes || []), sel.value];
+  sel.value = "";
+  renderIgnored();
+  await flush();
+  refreshRunning();
+});
 
 async function refreshRunning() {
   const apps = await invoke("list_windows");
@@ -1278,9 +1375,13 @@ async function renderFfHints() {
     S.ff = await invoke("ffmpeg_info");
   } catch { S.ff = { ok: false }; }
   const f = S.ff;
-  $("#getFfmpeg").hidden = !!f.ok;
-  $("#ffBanner").hidden = !!f.ok;
-  $("#ffBannerBtn").hidden = !!f.ok ? true : false;
+  const old = !!f.ok && !(f.ddagrab && f.gfxcapture);
+  $("#getFfmpeg").hidden = !!f.ok && !old;
+  $("#getFfmpeg").textContent = old ? "Update FFmpeg" : "Download FFmpeg";
+  $("#ffBanner").hidden = !!f.ok && !old;
+  $("#ffBannerBtn").hidden = !!f.ok && !old;
+  $("#ffBannerBtn").textContent = old ? "Update FFmpeg" : "Download FFmpeg";
+  if (old) $("#ffBannerText").textContent = "This FFmpeg is too old for TUFFClip (no window capture). Updating downloads a current one and keeps your old copy untouched.";
   if (!f.ok) {
     $("#ffBannerText").textContent = "FFmpeg isn't set up yet. TUFFClip needs it to record and export.";
     $("#ffHint").textContent = "FFmpeg wasn't found. Use the button above to download it, or enter the full path to ffmpeg.exe.";
@@ -1425,6 +1526,17 @@ $("#settingsScroll").addEventListener("scroll", spy);
     if (S.kind === "raw") loadClips();
   });
   listen("clip-error", (e) => toast(String(e.payload), true));
+  listen("preview-frame", (e) => {
+    if (!pv.on) return;
+    if (!pv.frames++) { $("#pvEmpty").hidden = true; $("#pvImg").hidden = false; }
+    $("#pvImg").src = "data:image/jpeg;base64," + e.payload;
+  });
+  listen("preview-ended", () => {
+    if (!pv.on) return;
+    if (!pv.frames) pvShow("No picture from this window.", "If the clips come out black too, try Whole display under Settings, Capture, Capture method.");
+    clearTimeout(pv.retry);
+    pv.retry = setTimeout(() => { if (pv.on && S.status?.recording && !document.hidden) startPreview(); }, 3000);
+  });
   listen("export-progress", (e) => {
     if (!S.sel || e.payload.path !== S.sel.path) return;
     const p = e.payload.pct;

@@ -314,6 +314,20 @@ pub fn running_games(exes: &HashSet<String>) -> Vec<RunWin> {
     out
 }
 
+/// The window's title bar text.
+pub fn window_title(hwnd: isize) -> Option<String> {
+    unsafe {
+        let h = HWND(hwnd as _);
+        let len = GetWindowTextLengthW(h);
+        if len <= 0 {
+            return None;
+        }
+        let mut buf = vec![0u16; len as usize + 1];
+        let n = GetWindowTextW(h, &mut buf);
+        Some(String::from_utf16_lossy(&buf[..n.max(0) as usize]))
+    }
+}
+
 /// Whether `hwnd` still exists.
 pub fn window_exists(hwnd: isize) -> bool {
     unsafe { IsWindow(HWND(hwnd as _)).as_bool() }

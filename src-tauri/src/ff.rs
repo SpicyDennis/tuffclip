@@ -54,17 +54,19 @@ pub struct FfInfo {
 /// since the engine asks every tick.
 pub fn has_gfxcapture(ffmpeg: &str) -> bool {
     use std::sync::Mutex;
-    static CACHE: Mutex<Option<(String, bool)>> = Mutex::new(None);
+    static CACHE: Mutex<Option<(String, Option<std::time::SystemTime>, bool)>> = Mutex::new(None);
+    // The file's modified time is part of the key, so replacing ffmpeg.exe in place is noticed.
+    let stamp = std::fs::metadata(ffmpeg).and_then(|m| m.modified()).ok();
     let mut c = CACHE.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some((p, v)) = c.as_ref() {
-        if p == ffmpeg {
+    if let Some((p, t, v)) = c.as_ref() {
+        if p == ffmpeg && *t == stamp {
             return *v;
         }
     }
     let out = cmd(ffmpeg).args(["-hide_banner", "-filters"]).stdin(Stdio::null()).output();
     let Ok(out) = out else { return true }; // ffmpeg missing: other errors will say so
     let v = String::from_utf8_lossy(&out.stdout).contains(" gfxcapture ");
-    *c = Some((ffmpeg.to_string(), v));
+    *c = Some((ffmpeg.to_string(), stamp, v));
     v
 }
 
@@ -162,8 +164,13 @@ pub fn download(dir: &std::path::Path, progress: impl Fn(u64)) -> Result<std::pa
         .map(|e| e.path().join("bin").join("ffmpeg.exe"))
         .find(|p| p.is_file())
         .ok_or_else(|| anyhow::anyhow!("ffmpeg.exe wasn't in the download"))?;
-    let dest = dir.join("ffmpeg.exe");
+    let mut dest = dir.join("ffmpeg.exe");
     let _ = std::fs::remove_file(&dest);
+    if dest.exists() {
+        // The old copy is still running (the recorder holds it): put the new one beside it.
+        let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+        dest = dir.join(format!("ffmpeg-{secs}.exe"));
+    }
     std::fs::rename(&src, &dest)?;
     let _ = std::fs::remove_dir_all(&unpack);
     Ok(dest)

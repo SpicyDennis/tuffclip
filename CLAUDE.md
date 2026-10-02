@@ -43,6 +43,9 @@ UI follows the suite-design skill (Slate & Tally). theme.css / menu.js are the s
 - Renaming a game in Settings > Games moves its `Raw\<Game>` / `Exports\<Game>` folders (`library::rename_game`, called from `apply_config`) and rewrites `exported.json`; file names don't change. Names apply on blur, not per keystroke. Games added get their exe name (editable afterwards).
 - `show_main` retries (window still closing, WebView2 hiccup) so opening from the tray or a second launch can't silently do nothing; `memory_info` runs off the main thread so a busy recorder can't freeze the window.
 
+- Recording indicator (0.10.0): the yellow border around a captured window is drawn by Windows Graphics Capture (the recorder passes `display_border=0`, which only works where Windows allows it). TUFFClip's own indicator is `overlay.rs`: one 12 px dim click-through dot on a corner of the game window, shown only while that window is in front. Position is `Config.indicator`, overridable per game (`GameEntry.indicator`), or Off. On a save, `Engine::save_clip` calls `overlay::flash(ok)`: the dot grows and pulses green (red on failure) for 1.4 s. The sound is the separate `beep` setting.
+- Preview tab (`preview.rs`): a second low-priority ffmpeg built from the recorder's current `RecordSpec` (5 fps, 960 px wide, mjpeg to stdout) that emits `preview-frame` events (base64 JPEG). It starts only while the Preview tab is open and visible and is killed on tab switch, hide and window destroy.
+- `Config.ignored_exes` hides programs from the "Add a running app" list (`list_windows` filters them); edited in Settings > Games.
 - Self-heal (`start_self_heal` in `main.rs`): a thread pings the main thread every 10 s; if it hasn't answered for 90 s, TUFFClip relaunches itself (`--hidden --relaunch`, which waits 3 s so the single-instance hand-off doesn't hit the dying copy) and exits. Goal: a hung background instance must never stop you opening TUFFClip.
 
 ## Architecture

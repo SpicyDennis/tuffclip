@@ -1,10 +1,10 @@
 //! Background brain: once a second, decide what (if anything) should be
 //! buffering, keep ffmpeg running with the right settings, and save clips.
 //! Idle cost is one window lookup per second — effectively 0% CPU.
-use crate::config::{data_dir, BitrateUnit, CaptureMethod, CaptureMode, Codec, Config};
+use crate::config::{data_dir, BitrateUnit, CaptureMethod, CaptureMode, Codec, Config, Indicator};
 use crate::recorder::{self, Crop, RamBuf, RecordSpec, Recorder};
 use crate::win::{self, MonitorInfo, WinGeom};
-use crate::{library, tray};
+use crate::{library, overlay, tray};
 use anyhow::{anyhow, bail, Result};
 use parking_lot::Mutex;
 use serde::Serialize;
@@ -44,6 +44,8 @@ pub struct Status {
     pub held_until_ms: Option<u64>,
     /// exe of the game being recorded (games mode).
     pub target: Option<String>,
+    /// Title of the window being recorded, so you can check it is the right one.
+    pub window_title: Option<String>,
     /// All running games, when there is more than one to pick from.
     pub choices: Vec<Choice>,
 }
@@ -151,6 +153,11 @@ impl Engine {
         self.status.lock().clone()
     }
 
+    /// What the recorder is capturing right now (None when idle).
+    pub fn spec(&self) -> Option<RecordSpec> {
+        self.recorder.lock().spec().cloned()
+    }
+
     pub fn set_hotkey_error(&self, e: Option<String>) {
         *self.hotkey_err.lock() = e;
     }
@@ -216,6 +223,7 @@ impl Engine {
         status.warn = self.hotkey_err.lock().clone();
         status.choices = choices;
         status.target = tracked.as_ref().map(|t| t.exe.clone());
+        let mut dot: Option<overlay::Target> = None;
 
         match pick_target(&cfg, tracked.as_ref(), &monitors) {
             Some((mon, game)) => {
@@ -250,7 +258,13 @@ impl Engine {
                         });
                         status.summary = summarize(&spec, &cfg);
                         match self.ensure_recording(spec, minimized) {
-                            Ok(()) => status.recording = true,
+                            Ok(()) => {
+                                status.recording = true;
+                                dot = indicator_for(&cfg, tracked.as_ref(), &mon);
+                                if cfg.mode == CaptureMode::Games {
+                                    status.window_title = tracked.as_ref().and_then(|t| win::window_title(t.hwnd));
+                                }
+                            }
                             Err(e) => status.error = Some(format!("{e:#}")),
                         }
                     }
@@ -265,6 +279,7 @@ impl Engine {
             }
         }
         self.expire_held();
+        overlay::set(dot);
 
         if status.recording {
             if let Some(b) = self.recorder.lock().buffer_info() {
@@ -598,6 +613,7 @@ impl Engine {
                 if beep {
                     win::beep();
                 }
+                overlay::flash(true);
                 self.clip_counts.lock().clear();
                 let _ = self.app.emit("clip-saved", p.to_string_lossy().to_string());
             }
@@ -607,6 +623,7 @@ impl Engine {
                 if beep {
                     win::beep_error();
                 }
+                overlay::flash(false);
                 let _ = self.app.emit("clip-error", format!("{e:#}"));
             }
         }
@@ -652,6 +669,22 @@ fn summarize(spec: &RecordSpec, cfg: &Config) -> String {
             Codec::Hevc => "HEVC",
         }
     )
+}
+
+/// Where the recording dot goes for the tracked game (its own choice, else the global one).
+fn indicator_for(cfg: &Config, tracked: Option<&Tracked>, mon: &MonitorInfo) -> Option<overlay::Target> {
+    let pos = tracked
+        .and_then(|t| cfg.games.iter().find(|g| g.exe.eq_ignore_ascii_case(&t.exe)))
+        .and_then(|g| g.indicator)
+        .unwrap_or(cfg.indicator);
+    if pos == Indicator::Off {
+        return None;
+    }
+    let rect = (mon.x, mon.y, mon.width as i32, mon.height as i32);
+    match (cfg.mode, tracked) {
+        (CaptureMode::Games, Some(t)) => Some(overlay::Target { hwnd: Some(t.hwnd), rect, pos }),
+        _ => Some(overlay::Target { hwnd: None, rect, pos }),
+    }
 }
 
 fn pick_target(

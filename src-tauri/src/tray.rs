@@ -35,8 +35,23 @@ fn with_dot(base: &Image, rgb: [u8; 3]) -> Image<'static> {
     Image::new_owned(px, w, h)
 }
 
+/// Shrink to `size` by picking the nearest pixel (no smoothing), so pixel art stays crisp.
+fn nearest(img: &Image, size: u32) -> Image<'static> {
+    let (w, h) = (img.width(), img.height());
+    let src = img.rgba();
+    let mut px = Vec::with_capacity((size * size * 4) as usize);
+    for y in 0..size {
+        for x in 0..size {
+            let (sx, sy) = ((x * 2 + 1) * w / (size * 2), (y * 2 + 1) * h / (size * 2));
+            let i = ((sy * w + sx) * 4) as usize;
+            px.extend_from_slice(&src[i..i + 4]);
+        }
+    }
+    Image::new_owned(px, size, size)
+}
+
 pub fn build(app: &tauri::App) -> tauri::Result<()> {
-    let base = app.default_window_icon().unwrap();
+    let base = &nearest(app.default_window_icon().unwrap(), 32);
     let icons = ICONS.get_or_init(|| {
         [
             Image::new_owned(base.rgba().to_vec(), base.width(), base.height()),

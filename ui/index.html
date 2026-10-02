@@ -13,6 +13,7 @@
   <nav class="tabs" id="tabs" role="tablist">
     <button class="tab" id="tabSettings" data-tab="settings" role="tab">Settings</button>
     <button class="tab active" id="tabLibrary" data-tab="library" role="tab">Library</button>
+    <button class="tab" id="tabPreview" data-tab="preview" role="tab">Preview</button>
   </nav>
   <div class="quick" id="quick" role="group" aria-label="Quick settings">
     <label>Clip length <select id="qClip" aria-label="Clip length"></select></label>
@@ -188,12 +189,32 @@
     </section>
   </section>
 
+  <!-- ============================== PREVIEW -->
+  <section class="view" id="view-preview" hidden>
+    <section class="stage">
+      <div class="preview">
+        <div class="pv-head">
+          <h2 id="pvTitle">Nothing is being recorded</h2>
+          <div class="meta" id="pvMeta"></div>
+        </div>
+        <div class="pv-frame" id="pvFrame">
+          <img id="pvImg" alt="Live view of what is being recorded" hidden>
+          <div class="empty" id="pvEmpty">
+            <p class="empty-title" id="pvEmptyTitle">Nothing to show yet.</p>
+            <p class="empty-sub" id="pvEmptySub"></p>
+          </div>
+        </div>
+        <p class="hint">A live view of exactly what ends up in your clips, a few frames a second. It only runs while this tab is open. If it isn't the window you expect, check the game list and capture method in Settings.</p>
+      </div>
+    </section>
+  </section>
+
   <!-- ============================== SETTINGS -->
   <section class="view settings-view" id="view-settings" hidden>
     <nav class="settings-nav" id="settingsNav">
       <button class="item active" data-group="general">General</button>
-      <button class="item" data-group="capture">Capture</button>
       <button class="item" data-group="games">Games</button>
+      <button class="item" data-group="capture">Capture</button>
       <button class="item" data-group="audio">Audio</button>
       <button class="item" data-group="storage">Storage</button>
       <button class="item" data-group="shortcuts">Shortcuts</button>
@@ -226,8 +247,8 @@
           <p class="hint">The window leaves the taskbar. Click the tray icon to bring it back.</p>
         </div>
         <div class="field">
-          <label class="check"><input type="checkbox" id="beep"> Beep when a clip is saved</label>
-          <p class="hint">You also get a different sound if a clip couldn't be saved.</p>
+          <label class="check"><input type="checkbox" id="beep"> Play a sound when a clip is saved</label>
+          <p class="hint">You get a different sound if a clip couldn't be saved. Turn this off to save silently; the recording dot still flashes.</p>
         </div>
         <div class="field">
           <label>Show bitrates in</label>
@@ -236,6 +257,29 @@
             <button data-unit="kbps">Kilobits (kbps)</button>
           </div>
           <p class="hint">Applies everywhere in TUFFClip, including the numbers you type.</p>
+        </div>
+      </section>
+
+      <section class="group" id="g-games">
+        <h3>Games</h3>
+        <div class="field">
+          <p class="hint">Recording starts when one of these is running and stops when it closes. If several are open, TUFFClip picks the one you've clipped most; switch from the top bar. Clips are filed under the name shown here. Click a name to change it: your existing clips move to the new name too.</p>
+          <div id="gameList" class="game-list"></div>
+          <div class="add-row">
+            <select id="runningSel" aria-label="Running apps"><option value="">Add a running app…</option></select>
+            <button class="btn sm ghost" id="refreshRunning" title="Refresh list">Refresh</button>
+            <button class="btn sm" id="addRunning">Add</button>
+            <button class="btn sm ghost" id="hideRunning" title="Never show this program in the list again">Hide</button>
+          </div>
+          <div class="add-row">
+            <input id="manualExe" placeholder="Or type the exe name, like cs2.exe">
+            <button class="btn sm" id="addManual">Add</button>
+          </div>
+        </div>
+        <div class="field">
+          <label>Hidden programs</label>
+          <p class="hint">Programs you hid from the running-apps list above. Show one again to be able to pick it.</p>
+          <div id="ignoredList" class="game-list"></div>
         </div>
       </section>
 
@@ -307,6 +351,17 @@
           <label class="check"><input type="checkbox" id="drawMouse"> Show the mouse cursor</label>
         </div>
         <div class="field">
+          <label for="indicator">Recording indicator</label>
+          <select id="indicator" style="align-self:flex-start">
+            <option value="top_left">Top left</option>
+            <option value="top_right">Top right</option>
+            <option value="bottom_left">Bottom left</option>
+            <option value="bottom_right">Bottom right</option>
+            <option value="off">Off</option>
+          </select>
+          <p class="hint">A small, dim dot in a corner of the recorded window, shown while that window is in front. It flashes green when a clip is saved (red if saving failed). It is never part of your clips. Each game can pick its own in the list under Games.</p>
+        </div>
+        <div class="field">
           <label for="holdMinutes">Keep the buffer after a game closes</label>
           <div class="row"><input type="number" id="holdMinutes" min="0" max="60" step="1" style="width:110px"><span class="unit">minutes</span></div>
           <p class="hint">You can still save a clip with the hotkey until this runs out or another recording starts. 0 clears the buffer as soon as the game closes.</p>
@@ -314,23 +369,6 @@
         <div class="field">
           <label class="check"><input type="checkbox" id="gentleSave"> Go easy on my PC while saving a clip</label>
           <p class="hint">Saving a clip runs at low priority, so it can take a moment longer instead of costing you frames. Exporting is separate: it runs at full speed unless you tick Low impact in the export area.</p>
-        </div>
-      </section>
-
-      <section class="group" id="g-games">
-        <h3>Games</h3>
-        <div class="field">
-          <p class="hint">Recording starts when one of these is running and stops when it closes. If several are open, TUFFClip picks the one you've clipped most; switch from the top bar. Clips are filed under the name shown here. Click a name to change it: your existing clips move to the new name too.</p>
-          <div id="gameList" class="game-list"></div>
-          <div class="add-row">
-            <select id="runningSel" aria-label="Running apps"><option value="">Add a running app…</option></select>
-            <button class="btn sm ghost" id="refreshRunning" title="Refresh list">Refresh</button>
-            <button class="btn sm" id="addRunning">Add</button>
-          </div>
-          <div class="add-row">
-            <input id="manualExe" placeholder="Or type the exe name, like cs2.exe">
-            <button class="btn sm" id="addManual">Add</button>
-          </div>
         </div>
       </section>
 

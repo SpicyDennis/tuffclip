@@ -480,7 +480,7 @@ fn build_args(s: &RecordSpec, audio: Option<AudioFormat>) -> Vec<String> {
         // Frames only arrive when the window changes, so `fps` fills the gaps to keep a steady rate.
         // A resized window is letterboxed into the original size instead of restarting the recording.
         format!(
-            "gfxcapture=hwnd={hwnd}:capture_cursor={}:max_framerate={}:width=-2:height=-2:resize_mode=scale_aspect,fps={}",
+            "gfxcapture=hwnd={hwnd}:capture_cursor={}:display_border=0:max_framerate={}:width=-2:height=-2:resize_mode=scale_aspect,fps={}",
             s.draw_mouse as u8, s.fps, s.fps
         )
     } else {
