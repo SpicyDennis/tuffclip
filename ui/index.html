@@ -139,17 +139,35 @@
                 <option value="mkv">.mkv</option>
                 <option value="mov">.mov</option>
                 <option value="webm">.webm</option>
+                <option value="gif">.gif</option>
               </select>
             </label>
             <label class="inline">Codec
               <select id="expCodec">
                 <option value="keep">Same as clip</option>
                 <option value="h264">H.264</option>
-                <option value="hevc">HEVC</option>
+                <option value="hevc">HEVC (H.265)</option>
                 <option value="vp9" hidden>VP9</option>
+                <option value="gif" hidden>GIF</option>
               </select>
             </label>
-            <label class="inline">Resolution
+            <label class="inline" id="gifFpsWrap" hidden>Frame rate
+              <select id="gifFps">
+                <option value="10">10 fps</option>
+                <option value="15">15 fps</option>
+                <option value="20">20 fps</option>
+                <option value="30">30 fps</option>
+              </select>
+            </label>
+            <label class="inline" id="gifResWrap" hidden>Size
+              <select id="gifRes">
+                <option value="720">720p</option>
+                <option value="480">480p</option>
+                <option value="360">360p</option>
+                <option value="240">240p</option>
+              </select>
+            </label>
+            <label class="inline" id="expResWrap">Resolution
               <select id="expRes">
                 <option value="-1">Auto</option>
                 <option value="0">Same as clip</option>
@@ -158,7 +176,7 @@
                 <option value="480">480p</option>
               </select>
             </label>
-            <label class="check"><input type="checkbox" id="expPrecise"> Exact size (slower)</label>
+            <label class="check" id="expPreciseWrap"><input type="checkbox" id="expPrecise"> Exact size (slower)</label>
             <label class="check" title="Idle priority and fewer threads: slower, but won't cost a running game frames."><input type="checkbox" id="expLow"> Low impact (use while gaming)</label>
           </div>
           <div class="export-row">
@@ -263,15 +281,17 @@
         </div>
         <div class="field">
           <label>Games</label>
-          <p class="hint">Recording starts when one of these is running and stops when it closes. If several are open, Clipr picks the one you've clipped most; switch from the top bar. Clips are filed under the name you give it.</p>
+          <p class="hint">Recording starts when one of these is running and stops when it closes. If several are open, Clipr picks the one you've clipped most; switch from the top bar. Clips are filed under the name shown here. Click a name to change it; new clips use the new name, older clips stay where they are.</p>
           <div id="gameList" class="game-list"></div>
           <div class="add-row">
             <select id="runningSel" aria-label="Running apps"><option value="">Add a running app…</option></select>
+            <input id="runningName" placeholder="Name to show (optional)" aria-label="Name to show for the running app">
             <button class="btn sm ghost" id="refreshRunning" title="Refresh list">Refresh</button>
             <button class="btn sm" id="addRunning">Add</button>
           </div>
           <div class="add-row">
             <input id="manualExe" placeholder="Or type the exe name, like cs2.exe">
+            <input id="manualName" placeholder="Name to show (optional)" aria-label="Name to show for the typed exe">
             <button class="btn sm" id="addManual">Add</button>
           </div>
         </div>
@@ -317,8 +337,8 @@
           <div class="field">
             <label for="codec">Codec</label>
             <select id="codec">
+              <option value="hevc">HEVC (H.265), smaller files</option>
               <option value="h264">H.264, plays everywhere</option>
-              <option value="hevc">HEVC, smaller files</option>
             </select>
           </div>
         </div>

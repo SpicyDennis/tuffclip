@@ -106,7 +106,7 @@ impl Default for Config {
             bitrate_kbps: 30_000,
             clip_seconds: 30,
             encoder: Encoder::Nvenc,
-            codec: Codec::H264,
+            codec: Codec::Hevc,
             draw_mouse: true,
             audio: true,
             audio_kbps: 160,

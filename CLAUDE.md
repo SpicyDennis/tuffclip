@@ -32,6 +32,7 @@ UI follows the suite-design skill (Slate & Tally). theme.css / menu.js are the s
 - Window X / minimize: `close_to_tray` (default on; off = X calls `app.exit`) and `minimize_to_tray`. `hide_window`/minimize use `destroy()` so they never trigger the quit path. `tauri-plugin-single-instance` must stay the first plugin.
 - `buffer_in_ram`: ffmpeg writes MPEG-TS to stdout, `RamBuf` cuts it at video-PID (256) keyframes; saving pipes the chunks to ffmpeg stdin. Disk mode is the segment ring as before.
 - Crash handling is retry-with-backoff forever (`Engine::note_crash`), plus a stall watchdog; the watcher tick is wrapped in `catch_unwind`.
+- `.gif` export (`export.rs`): single ffmpeg pass with palettegen/paletteuse, no audio, own fps/size selects (`#gifFps`, `#gifRes`); exported gifs are not listed in the library. Settings codec defaults to HEVC (existing settings keep their value). Export progress shows percent + time left only (no speed). Games get their display name from the game list; adding a running app uses the optional "Name to show" field, not the window title.
 - Exports always run at idle priority with few threads. `.webm` always re-encodes (VP9 + Opus); "original quality" with a different codec is a quality-matched GPU re-encode (`HEVC_RATIO` 0.65, duplicated in `ui/app.js`), audio copied.
 - `fps: 0` means "native": the monitor refresh rate from `EnumDisplaySettingsW`.
 

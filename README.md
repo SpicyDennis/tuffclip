@@ -68,8 +68,9 @@ The tray icon gets a red dot while recording (amber while a closed game's buffer
 | 10/25/50/100 MB or custom | GPU encode at a computed bitrate; re-done once if it overshoots. | Fast |
 | + "Exact size" | x264 / x265 two-pass on the CPU. Lands closest to the target. | Slower |
 | `.webm` | Always re-encoded as VP9 + Opus on the CPU. | Slow |
+| `.gif` | Looping, no sound. Frame rate (10-30 fps) and size (240p-720p) are chosen next to the Export button; up to 60 s. | Medium |
 
-"Auto" resolution drops to 1080p/720p/480p when the size budget is too small to look good. File type (`.mp4`, `.mkv`, `.mov`, `.webm`) and codec are chosen per export, next to the Export button. H.263 is not offered: it is a 1990s codec that only supports a handful of fixed frame sizes, compresses far worse than H.264 and has no GPU encoder.
+"Auto" resolution drops to 1080p/720p/480p when the size budget is too small to look good. File type (`.mp4`, `.mkv`, `.mov`, `.webm`, `.gif`) and codec are chosen per export, next to the Export button. H.263 is not offered: it is a 1990s codec that only supports a handful of fixed frame sizes, compresses far worse than H.264 and has no GPU encoder.
 
 Clipr remembers which raw clips you've exported; Settings > Storage can delete the ones that already have a trimmed version.
 
@@ -96,7 +97,7 @@ src-tauri/src/
   engine.rs    1 Hz watcher: which game is up, keep ffmpeg running, hold the buffer after a game closes, save clips
   recorder.rs  builds the ffmpeg capture command; stitches segments into clips
   audio.rs     WASAPI loopback -> paced f32 stream to ffmpeg stdin
-  export.rs    trim / codec / target-size export with progress and speed
+  export.rs    trim / codec / target-size export with progress
   library.rs   lists clips by game folder, remembers which raws were exported, storage totals
   win.rs       DXGI monitors, game windows, memory info, job object
   config.rs    settings (JSON)

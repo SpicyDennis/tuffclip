@@ -289,8 +289,8 @@ async fn export_clip(app: AppHandle, eng: Eng<'_>, req: export::ExportRequest) -
     let cfg = eng.cfg.lock().clone();
     tauri::async_runtime::spawn_blocking(move || {
         let path = req.path.clone();
-        let out = export::export(&cfg, &req, |pct, speed| {
-            let _ = app.emit("export-progress", serde_json::json!({ "path": path, "pct": pct, "speed": speed }));
+        let out = export::export(&cfg, &req, |pct| {
+            let _ = app.emit("export-progress", serde_json::json!({ "path": path, "pct": pct }));
         })?;
         library::record_export(&req.path, &out);
         Ok::<_, anyhow::Error>(out.to_string_lossy().into_owned())

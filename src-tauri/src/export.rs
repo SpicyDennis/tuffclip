@@ -3,6 +3,7 @@
 //!  * original, other codec                 -> GPU re-encode at a quality-matched bitrate, audio copied
 //!  * size / bitrate                        -> GPU encode at a computed bitrate (fast); size mode re-tries once if over
 //!  * exact size                            -> CPU two-pass (x264 or x265), slowest, lands closest to the target size
+//!  * .gif                                  -> palette-based CPU encode, no audio, capped frame rate and size
 //!  * .webm                                 -> always re-encoded with VP9 + Opus (.webm can't hold H.264/AAC)
 //!
 //! Exports run at normal priority on all cores; `low_impact` drops to idle priority with a few threads.
@@ -23,6 +24,7 @@ pub enum ExportFormat {
     Mkv,
     Mov,
     Webm,
+    Gif,
 }
 
 impl ExportFormat {
@@ -32,6 +34,7 @@ impl ExportFormat {
             ExportFormat::Mkv => "mkv",
             ExportFormat::Mov => "mov",
             ExportFormat::Webm => "webm",
+            ExportFormat::Gif => "gif",
         }
     }
 }
@@ -69,6 +72,9 @@ pub struct ExportRequest {
     /// -1 = auto, 0 = source, otherwise max output height.
     pub height: i32,
     pub precise: bool,
+    /// .gif only: frames per second.
+    #[serde(default)]
+    pub fps: u32,
     /// File name without extension; empty = automatic.
     #[serde(default)]
     pub name: String,
@@ -116,8 +122,8 @@ pub fn clean_stem(name: &str, ext: &str) -> String {
     if s == "Unknown" && n.trim().is_empty() { String::new() } else { s.chars().take(120).collect() }
 }
 
-/// `progress` gets (fraction done, speed as a multiple of real time; 0 = unknown).
-pub fn export(cfg: &Config, req: &ExportRequest, progress: impl Fn(f64, f64)) -> Result<PathBuf> {
+/// `progress` gets the fraction done (0..1).
+pub fn export(cfg: &Config, req: &ExportRequest, progress: impl Fn(f64)) -> Result<PathBuf> {
     let input = PathBuf::from(&req.path);
     if !input.is_file() {
         bail!("Clip not found: {}", req.path);
@@ -130,13 +136,14 @@ pub fn export(cfg: &Config, req: &ExportRequest, progress: impl Fn(f64, f64)) ->
     let fmt = req.format;
     let ext = fmt.ext();
     let webm = fmt == ExportFormat::Webm;
+    let gif = fmt == ExportFormat::Gif;
 
     let game = sanitize_name(&library::game_of(&input));
     let src_stem = input.file_stem().unwrap_or_default().to_string_lossy().into_owned();
 
     // ---- what are we asked to produce?
-    let size_mode = req.mode == "size" && req.target_mb > 0.0;
-    let rate_mode = req.mode == "bitrate" && req.target_kbps > 0;
+    let size_mode = !gif && req.mode == "size" && req.target_mb > 0.0;
+    let rate_mode = !gif && req.mode == "bitrate" && req.target_kbps > 0;
     let known_src = req.src_kbps > 0.0;
     let src_codec = ff::probe_codec(&cfg.ffmpeg, &input);
     let hevc = match req.codec {
@@ -158,7 +165,9 @@ pub fn export(cfg: &Config, req: &ExportRequest, progress: impl Fn(f64, f64)) ->
         bail!("That's a higher bitrate than the clip has. Pick a lower one, or export the original.");
     }
 
-    let tag = if size_mode {
+    let tag = if gif {
+        "gif".into()
+    } else if size_mode {
         let mb = req.target_mb;
         if mb.fract() == 0.0 { format!("{mb:.0}MB") } else { format!("{mb:.1}MB") }
     } else if rate_mode {
@@ -177,6 +186,22 @@ pub fn export(cfg: &Config, req: &ExportRequest, progress: impl Fn(f64, f64)) ->
     let ss = format!("{:.3}", req.start.max(0.0));
     let t = format!("{:.3}", dur);
     let faststart = matches!(fmt, ExportFormat::Mp4 | ExportFormat::Mov);
+
+    // ---- .gif: one palette for the whole clip, no audio
+    if gif {
+        let fps = req.fps.clamp(5, 30);
+        let h = if req.height > 0 { req.height as u32 } else { 480 };
+        let vf = format!(
+            "fps={fps},scale=-2:'min({h},ih)':flags=lanczos,split[a][b];[a]palettegen=stats_mode=diff[p];[b][p]paletteuse=dither=bayer:bayer_scale=5:diff_mode=rectangle"
+        );
+        let mut c = ff::cmd_prio(&cfg.ffmpeg, req.low_impact);
+        c.args(["-hide_banner", "-loglevel", "error", "-y", "-ss", &ss, "-i"])
+            .arg(&input)
+            .args(["-t", &t, "-map", "0:v:0", "-an", "-vf", &vf, "-loop", "0", "-progress", "pipe:1", "-nostats"])
+            .arg(&out);
+        run_progress(c, dur, 0.0, 1.0, &progress)?;
+        return Ok(out);
+    }
 
     // ---- no re-encode
     if !size_mode && !rate_mode && !webm && !recode {
@@ -370,7 +395,7 @@ fn cleanup_passlogs(prefix: &Path) {
     }
 }
 
-fn run_progress(mut c: Command, dur: f64, base: f64, span: f64, progress: &impl Fn(f64, f64)) -> Result<()> {
+fn run_progress(mut c: Command, dur: f64, base: f64, span: f64, progress: &impl Fn(f64)) -> Result<()> {
     let mut child = c
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -384,20 +409,12 @@ fn run_progress(mut c: Command, dur: f64, base: f64, span: f64, progress: &impl 
         s
     });
     let stdout = BufReader::new(child.stdout.take().unwrap());
-    let mut speed = 0.0;
     for line in stdout.lines().map_while(|l| l.ok()) {
-        if let Some(v) = line.strip_prefix("speed=") {
-            // "speed=2.31x", or "N/A" before the first frames
-            if let Ok(s) = v.trim().trim_end_matches('x').trim().parse::<f64>() {
-                speed = s;
-            }
-            continue;
-        }
         let v = line
             .strip_prefix("out_time_us=")
             .or_else(|| line.strip_prefix("out_time_ms=")); // also microseconds, despite the name
         if let Some(us) = v.and_then(|v| v.trim().parse::<f64>().ok()) {
-            progress(base + span * (us / 1e6 / dur).clamp(0.0, 1.0), speed);
+            progress(base + span * (us / 1e6 / dur).clamp(0.0, 1.0));
         }
     }
     let status = child.wait()?;
@@ -405,6 +422,6 @@ fn run_progress(mut c: Command, dur: f64, base: f64, span: f64, progress: &impl 
     if !status.success() {
         bail!("Export failed: {}", ff::tail(&errs));
     }
-    progress(base + span, speed);
+    progress(base + span);
     Ok(())
 }
