@@ -20,7 +20,7 @@ Run from `src-tauri/` unless noted:
 
 `README.md` notes the code was originally written without compiling on Windows, so expect occasional `windows`-crate (0.58) signature errors.
 
-UI follows the suite-design skill (Slate & Tally). theme.css / menu.js are the shared theme; don't edit them per app. File menu and Settings follow the skill's fixed order. One deliberate deviation: settings autosave (no draft/Save bar), per the owner's request.
+UI follows the suite-design skill (Slate & Tally). theme.css / menu.js are the shared theme; don't edit them per app. File menu and Settings follow the skill's fixed order. Deliberate deviations, per the owner's requests: settings autosave (no draft/Save bar); no File menu (menu.js is no longer loaded; Ctrl+, / Ctrl+Q / Esc still work, Open data folder lives in Settings > Advanced); no Back button in Settings (tab or Esc leaves); the top bar holds quick settings (clip length, resolution, frame rate) in the middle and a reminder of the clip shortcut at the far right.
 
 ## Recent behaviour worth knowing
 
@@ -33,8 +33,15 @@ UI follows the suite-design skill (Slate & Tally). theme.css / menu.js are the s
 - `buffer_in_ram`: ffmpeg writes MPEG-TS to stdout, `RamBuf` cuts it at video-PID (256) keyframes; saving pipes the chunks to ffmpeg stdin. Disk mode is the segment ring as before.
 - Crash handling is retry-with-backoff forever (`Engine::note_crash`), plus a stall watchdog; the watcher tick is wrapped in `catch_unwind`.
 - `.gif` export (`export.rs`): single ffmpeg pass with palettegen/paletteuse, no audio, own fps/size selects (`#gifFps`, `#gifRes`); exported gifs are not listed in the library. Settings codec defaults to HEVC (existing settings keep their value). Export progress shows percent + time left only (no speed). Games get their display name from the game list; adding a running app uses the optional "Name to show" field, not the window title.
+- `.png` export (`export::export_frame`) is a screenshot: the frame under the playhead, decoded raw from the clip with one ffmpeg call, no filters, lossless. Picking `.png` hides the mode/size/bitrate/codec/resolution/low-impact controls and the button reads "Save frame". They go in `Exports\<Game>\Screenshots\`. Like gifs, pngs aren't listed in the library and don't mark the raw clip as exported.
 - Exports always run at idle priority with few threads. `.webm` always re-encodes (VP9 + Opus); "original quality" with a different codec is a quality-matched GPU re-encode (`HEVC_RATIO` 0.65, duplicated in `ui/app.js`), audio copied.
 - `fps: 0` means "native": the monitor refresh rate from `EnumDisplaySettingsW`.
+
+- Bitrate is automatic by default (`bitrate_auto`): `config::auto_bitrate` (output size x fps^0.75 x 0.2 bpp, HEVC x0.65) is applied in `RecordSpec::apply_auto_bitrate`; `autoRate` in `ui/app.js` mirrors it for display. The settings field is locked until "Set the bitrate myself" is ticked.
+- Renaming a game in Settings > Games moves its `Raw\<Game>` / `Exports\<Game>` folders (`library::rename_game`, called from `apply_config`) and rewrites `exported.json`; file names don't change. Names apply on blur, not per keystroke. Games added get their exe name (editable afterwards).
+- `show_main` retries (window still closing, WebView2 hiccup) so opening from the tray or a second launch can't silently do nothing; `memory_info` runs off the main thread so a busy recorder can't freeze the window.
+
+- Self-heal (`start_self_heal` in `main.rs`): a thread pings the main thread every 10 s; if it hasn't answered for 90 s, Clipr relaunches itself (`--hidden --relaunch`, which waits 3 s so the single-instance hand-off doesn't hit the dying copy) and exits. Goal: a hung background instance must never stop you opening Clipr.
 
 ## Architecture
 

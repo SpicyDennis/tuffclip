@@ -65,6 +65,8 @@ pub struct Config {
     /// Output height; 0 = native resolution.
     pub height: u32,
     pub bitrate_kbps: u32,
+    /// Pick the bitrate from resolution, frame rate and codec (off = use `bitrate_kbps`).
+    pub bitrate_auto: bool,
     pub clip_seconds: u32,
     pub encoder: Encoder,
     pub codec: Codec,
@@ -104,6 +106,7 @@ impl Default for Config {
             fps: 0,
             height: 0,
             bitrate_kbps: 30_000,
+            bitrate_auto: true,
             clip_seconds: 30,
             encoder: Encoder::Nvenc,
             codec: Codec::Hevc,
@@ -130,6 +133,17 @@ impl Default for Config {
             capture_method: CaptureMethod::Window,
         }
     }
+}
+
+/// Bitrate for game footage at the given output size, frame rate and codec.
+/// Mirrored in `ui/app.js` (`autoRate`) for the settings display; keep them equal.
+pub fn auto_bitrate(w: u32, h: u32, fps: u32, codec: Codec) -> u32 {
+    let px = w as f64 * h as f64;
+    // motion-compensated codecs gain less than linearly from a higher frame rate
+    let eff_fps = 60.0 * (fps.max(1) as f64 / 60.0).powf(0.75);
+    let h264 = px * eff_fps * 0.2 / 1000.0;
+    let kbps = if codec == Codec::Hevc { h264 * 0.65 } else { h264 };
+    ((kbps / 500.0).round() * 500.0).clamp(4_000.0, 150_000.0) as u32
 }
 
 pub static CONFIG_BROKEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);

@@ -44,6 +44,7 @@ const S = {
   warn: "",
   status: null,
   targetSig: "",
+  renamedFrom: [],   // game names that were just changed (their clips move on save)
 };
 
 // ------------------------------------------------------------------ utils
@@ -77,6 +78,8 @@ function toast(msg, err = false) {
   setTimeout(() => el.remove(), err ? 7000 : 3500);
 }
 const inInput = () => ["INPUT", "SELECT", "TEXTAREA"].includes(document.activeElement?.tagName);
+// same as the Rust side: what a game name becomes as a folder name
+const folderName = (n) => (String(n).replace(/[<>:"\/\\|?*\x00-\x1f]/g, "_").trim().replace(/\.+$/, "").trim() || "Unknown");
 const baseName = (p) => String(p).split(/[\\/]/).pop();
 const stemOf = (p) => baseName(p).replace(/\.[^.]+$/, "");
 
@@ -116,7 +119,6 @@ $("#tabLibrary").addEventListener("click", () => showView("library"));
 $("#tabSettings").addEventListener("click", () => showView("settings"));
 $("#expLow").checked = store.get("expLow", false);
 $("#expLow").addEventListener("change", (e) => store.set("expLow", e.target.checked));
-$("#settingsBack").addEventListener("click", () => showView("library"));
 
 // ---- draggable top-bar tabs (File / Settings / Library); order is remembered
 (() => {
@@ -172,15 +174,6 @@ $("#settingsBack").addEventListener("click", () => showView("library"));
   }, true);
 })();
 
-document.addEventListener("menu-action", (e) => {
-  switch (e.detail) {
-    case "save-clip": invoke("save_clip_now").catch(() => {}); break;
-    case "open-folder": invoke("open_clips_folder", { kind: S.kind }).catch((x) => toast(x, true)); break;
-    case "data-folder": invoke("open_data_folder").catch((x) => toast(x, true)); break;
-    case "hide": invoke("hide_window"); break;
-    case "quit": invoke("quit_app"); break;
-  }
-});
 document.addEventListener("keydown", (e) => {
   if ($("#confirm").open) return; // the dialog handles its own Esc / Enter
   if (e.ctrlKey && e.key === ",") { e.preventDefault(); showView("settings"); }
@@ -528,19 +521,25 @@ document.addEventListener("keydown", (e) => {
 });
 
 // ------------------------------------------------------------------ export
+// rough size of a lossless .png of game footage at the clip's resolution
+function frameEst() {
+  const px = (video.videoWidth || 1920) * (video.videoHeight || 1080);
+  return `About <b>${fmtMb((px * 1.8) / 1e6)}</b>`;
+}
 const SIZE_PRESETS = [5, 10, 25, 50, 100, 200, 500];
 const RATE_PRESETS = [1000, 2500, 5000, 8000, 15000, 25000, 40000, 60000];
 
 const audioTier = (total) => (total < 600 ? 48 : total < 2000 ? 96 : 128);
 const isWebm = () => S.format === "webm";
 const isGif = () => S.format === "gif";
+const isPng = () => S.format === "png"; // a screenshot: the frame under the playhead, untouched
 const GIF_BYTES_PER_PX = 0.1; // rough: palette GIFs of game footage land near this
 const GIF_MAX_SECS = 60;
 const srcCodec = () => S.srcCodec || S.cfg?.codec || "h264";
 // "Same as clip" can only mean something when nothing but the cut changes; otherwise it's H.264.
 const effCodec = () => (S.mode === "original" ? S.codec : S.codec === "keep" ? "h264" : S.codec);
 // Original quality in a different codec: a quality-matched re-encode instead of a straight copy.
-const recoding = () => S.mode === "original" && !isWebm() && !isGif() && S.codec !== "keep" && S.codec !== srcCodec();
+const recoding = () => S.mode === "original" && !isWebm() && !isGif() && !isPng() && S.codec !== "keep" && S.codec !== srcCodec();
 const codecName = (c) => ({ h264: "H.264", hevc: "HEVC" }[c] || c);
 
 // What the clip itself weighs, so nothing can be exported bigger than "native".
@@ -556,6 +555,7 @@ const mbAt = (kbps, len) => (kbps * 1000 / 8 * len) / 1e6;
 
 function exportTag() {
   if (isGif()) return "gif";
+  if (isPng()) return "frame";
   if (S.mode === "size" && S.mb > 0) return `${Number.isInteger(S.mb) ? S.mb : S.mb.toFixed(1)}MB`;
   if (S.mode === "bitrate" && S.kbps > 0) return `${trimNum(S.kbps / 1000)}Mbps`;
   if (recoding()) return effCodec();
@@ -593,16 +593,21 @@ function renderExport() {
   const n = native();
   const webm = isWebm();
   const gif = isGif();
+  const png = isPng();
+  const clipOnly = gif || png; // these ignore the size / bitrate / codec choices
   const recode = recoding();
   const reencode = S.mode !== "original" || webm || recode;
   $$("#modeSeg button").forEach((b) => b.classList.toggle("active", b.dataset.mode === S.mode));
-  $("#modeSeg").parentElement.hidden = gif;
-  $("#sizeRow").hidden = gif || S.mode !== "size";
-  $("#rateRow").hidden = gif || S.mode !== "bitrate";
+  $("#modeSeg").parentElement.hidden = clipOnly;
+  $("#sizeRow").hidden = clipOnly || S.mode !== "size";
+  $("#rateRow").hidden = clipOnly || S.mode !== "bitrate";
   $("#gifFpsWrap").hidden = !gif;
   $("#gifResWrap").hidden = !gif;
-  $("#expResWrap").hidden = gif;
-  $("#expPreciseWrap").hidden = gif;
+  $("#expResWrap").hidden = clipOnly;
+  $("#expPreciseWrap").hidden = clipOnly;
+  $("#expCodecWrap").hidden = png;
+  $("#expLowWrap").hidden = png;
+  if (!S.exporting) $("#exportBtn").textContent = png ? "Save frame" : "Export";
   $("#expFormat").value = S.format;
   const cs = $("#expCodec");
   cs.querySelector('[value="keep"]').disabled = S.mode !== "original";
@@ -618,11 +623,14 @@ function renderExport() {
   let est = "";
   let hint = "";
 
-  if (n) {
+  if (png) {
+    valid = S.dur > 0;
+    est = frameEst();
+    hint = "Saves the exact frame under the playhead as a lossless .png, with no scaling or recompression. Pause on the frame you want first.";
+  } else if (n) {
     pickDefaults(n);
     const customMb = $("#customMb").value !== "";
     const customRate = $("#customRate").value !== "";
-    const hevc = effCodec() === "hevc" && !webm;
 
     if (gif) {
       const h = Number($("#gifRes").value) || 480;
@@ -653,7 +661,6 @@ function renderExport() {
         const v = (S.mb * 8000 * 0.96) / n.len - audioTier((S.mb * 8000 * 0.96) / n.len);
         if (v < 800) hint = "That will look rough. Trim shorter or raise the size.";
         else hint = "Picks a bitrate so the file lands near this size.";
-        if (hevc) hint += ` HEVC keeps more detail at the same size: it looks about like H.264 at ${fmtMb(S.mb / HEVC_RATIO)}.`;
       }
     } else if (S.mode === "bitrate") {
       const presets = RATE_PRESETS.filter((k) => rateOk(k, n));
@@ -673,7 +680,6 @@ function renderExport() {
         const total = S.kbps + audioTier(S.kbps + 128);
         est = `About <b>${fmtMb(mbAt(total, n.len))}</b>`;
         hint = S.kbps < 800 ? "That will look rough." : "Video bitrate; audio is added on top.";
-        if (hevc) hint += ` HEVC looks about like H.264 at ${fmtRate(S.kbps / HEVC_RATIO)}.`;
       }
     } else if (webm) {
       est = `About <b>${fmtMb(mbAt(n.total * 0.85, n.len))}</b>`;
@@ -683,8 +689,8 @@ function renderExport() {
       const v = Math.max(500, n.total - 128) * r;
       est = `About <b>${fmtMb(mbAt(v + 128, n.len))}</b>`;
       hint = hevc
-        ? "Re-encodes as HEVC at the same picture quality: about a third smaller, but it takes longer and not every player or site takes HEVC. Audio is untouched."
-        : "Re-encodes as H.264 at the same picture quality: bigger than HEVC, but plays everywhere. Audio is untouched.";
+        ? "Re-encodes as HEVC at the same picture quality. It takes longer, and not every player or site takes HEVC. Audio is untouched."
+        : "Re-encodes as H.264 at the same picture quality. It takes longer, but plays everywhere. Audio is untouched.";
     } else {
       est = `About <b>${fmtMb(n.mb * (S.format === "mkv" ? 0.99 : 1))}</b>`;
       hint = "Cuts land on the nearest keyframe. Instant and lossless." +
@@ -740,7 +746,7 @@ $("#gifFps").addEventListener("change", (e) => { store.set("clipr.gifFps", e.tar
 $("#gifRes").addEventListener("change", (e) => { store.set("clipr.gifRes", e.target.value); renderExport(); });
 
 $("#exportBtn").addEventListener("click", async () => {
-  const n = native();
+  const n = native() || (isPng() && S.sel && S.dur > 0 ? { total: 0 } : null);
   if (!S.sel || !n || S.exporting) return;
   S.exporting = true;
   S.expStart = Date.now();
@@ -753,8 +759,8 @@ $("#exportBtn").addEventListener("click", async () => {
     const out = await invoke("export_clip", {
       req: {
         path: S.sel.path,
-        start: S.start,
-        end: S.end,
+        start: isPng() ? video.currentTime : S.start,
+        end: isPng() ? video.currentTime + 0.1 : S.end,
         mode: S.mode,
         format: S.format,
         codec: S.codec,
@@ -768,7 +774,7 @@ $("#exportBtn").addEventListener("click", async () => {
         src_kbps: n.total,
       },
     });
-    toast(`Exported ${baseName(out)}`);
+    toast(`${isPng() ? "Saved" : "Exported"} ${baseName(out)}`);
     S.nameTouched = false;
     loadClips(); // the raw clip now shows as exported
   } catch (e) {
@@ -832,8 +838,14 @@ function schedule(delay = 250) {
 
 async function flush() {
   clearTimeout(saveTimer);
+  const renamed = S.renamedFrom.splice(0);
+  if (renamed.length && S.sel && renamed.some((n) => folderName(n) === S.sel.game)) {
+    closeClip(); // its folder is about to move, so let go of the file first
+    await new Promise((r) => setTimeout(r, 200));
+  }
   try {
     await invoke("save_config", { cfg: { ...S.cfg } });
+    if (renamed.length) loadClips();
     S.cfg = await invoke("get_config");
     flash("Saved");
     $("#hotkeyErr").hidden = true;
@@ -868,21 +880,43 @@ function curMonitor() {
 }
 const monitorHz = () => curMonitor()?.refresh_hz || 0;
 
+// Rebuild a select's options only when they changed (a rebuild would close an open dropdown).
+function fillSelect(el, opts, value) {
+  const sig = JSON.stringify(opts);
+  if (el.dataset.sig !== sig) {
+    el.innerHTML = opts.map(([v, l, off]) => `<option value="${v}"${off ? " disabled" : ""}>${esc(l)}</option>`).join("");
+    el.dataset.sig = sig;
+  }
+  el.value = String(value);
+}
+
+const even = (x) => Math.max(2, Math.floor(x / 2) * 2);
+
 function renderHeight() {
   const m = curMonitor();
-  const o = $("#height option[value='0']");
-  if (o) o.textContent = m ? `Native (${m.width}×${m.height})` : "Native";
+  const canScale = !S.ff || S.ff.scale_d3d11 !== false;
+  const opts = [];
+  let cur = S.cfg.height;
+  if (m) {
+    opts.push([0, `${m.width}×${m.height}`]);
+    const hs = [1440, 1080, 720, 480];
+    if (cur && cur < m.height && !hs.includes(cur)) hs.push(cur);
+    hs.filter((h) => h < m.height).sort((a, b) => b - a)
+      .forEach((h) => opts.push([h, `${even((m.width * h) / m.height)}×${h}`, !canScale]));
+    if (cur >= m.height) cur = 0; // as big as the display is the same as no scaling
+  } else {
+    opts.push([0, "Same as the display"], [1440, "1440p"], [1080, "1080p"], [720, "720p"]);
+  }
+  $$("#height, #qHeight").forEach((el) => fillSelect(el, opts, cur));
 }
 
 function renderFps() {
   const hz = monitorHz();
-  const opts = [[0, hz ? `Native (${hz} Hz)` : "Native (match my display)"]];
+  const opts = [[0, hz ? `${hz} fps (display)` : "Match my display"]];
   const list = [30, 60, 120, 144, 165, 240];
   if (S.cfg.fps && !list.includes(S.cfg.fps)) list.push(S.cfg.fps);
   list.sort((a, b) => a - b).forEach((f) => opts.push([f, `${f} fps`]));
-  const sel = $("#fps");
-  sel.innerHTML = opts.map(([v, l]) => `<option value="${v}">${l}</option>`).join("");
-  sel.value = String(S.cfg.fps);
+  $$("#fps, #qFps").forEach((el) => fillSelect(el, opts, S.cfg.fps));
   $("#fpsHint").textContent = !S.cfg.fps
     ? "Follows your display's refresh rate."
     : hz && S.cfg.fps > hz
@@ -890,22 +924,37 @@ function renderFps() {
       : "";
 }
 
+const lenLabel = (s) => (s < 60 ? `${s} s` : s % 60 ? `${Math.floor(s / 60)} min ${s % 60} s` : `${s / 60} min`);
+function renderClipLen() {
+  const list = [10, 15, 20, 30, 45, 60, 90, 120, 180, 300, 600];
+  if (!list.includes(S.cfg.clip_seconds)) list.push(S.cfg.clip_seconds);
+  list.sort((a, b) => a - b);
+  fillSelect($("#qClip"), list.map((n) => [n, lenLabel(n)]), S.cfg.clip_seconds);
+}
+
+// Bitrate picked for the current settings. Mirrors `auto_bitrate` in config.rs; keep them equal.
+function autoRate(c = S.cfg) {
+  const m = curMonitor();
+  let w = m?.width || 1920, h = m?.height || 1080;
+  if (c.height && c.height < h) { w = even((w * c.height) / h); h = even(c.height); }
+  const fps = c.fps || monitorHz() || 60;
+  const h264 = (w * h * 60 * Math.pow(fps / 60, 0.75) * 0.2) / 1000;
+  const k = c.codec === "hevc" ? h264 * HEVC_RATIO : h264;
+  return Math.min(150000, Math.max(4000, Math.round(k / 500) * 500));
+}
+const effRate = (c = S.cfg) => (c.bitrate_auto ? autoRate(c) : c.bitrate_kbps);
+
 function renderEstimates() {
   const c = S.cfg;
   if (!c) return;
-  const total = c.bitrate_kbps + (c.audio ? c.audio_kbps : 0);
+  const rate = effRate(c);
+  const total = rate + (c.audio ? c.audio_kbps : 0);
   const clipMb = (total * c.clip_seconds) / 8 / 1000;
   const bufSecs = Math.ceil(c.clip_seconds / 2) * 2 + 8;
   const bufMb = (total * bufSecs) / 8 / 1000;
-  const audio = c.audio ? c.audio_kbps : 0;
-  const hevc = c.codec === "hevc";
-  // Same picture quality in the other codec (an estimate; it varies with the game).
-  const otherRate = Math.round(hevc ? c.bitrate_kbps / HEVC_RATIO : c.bitrate_kbps * HEVC_RATIO);
-  const otherClip = ((otherRate + audio) * c.clip_seconds) / 8 / 1000;
-  const otherName = hevc ? "H.264" : "HEVC";
   $("#clipEstimate").innerHTML =
-    `<b>${c.clip_seconds} s</b> clip: about <b>${fmtMb(clipMb)}</b> · buffer: <b>${fmtMb(bufMb)}</b> ${c.buffer_in_ram ? "in RAM" : "on disk"}<br>` +
-    `${otherName} at the same quality: <b>${fmtRate(otherRate)}</b>, <b>${fmtMb(otherClip)}</b> per clip`;
+    `<b>${lenLabel(c.clip_seconds)}</b> clip: about <b>${fmtMb(clipMb)}</b> · video <b>${fmtRate(rate)}</b><br>` +
+    `Buffer: <b>${fmtMb(bufMb)}</b> ${c.buffer_in_ram ? "in RAM" : "on disk"}`;
   $("#ramHint").textContent = c.buffer_in_ram
     ? `Uses about ${fmtMb(bufMb)} of memory while recording and writes nothing to your drive. It's emptied when recording stops, or a few minutes after the game closes.`
     : `Off: the buffer (about ${fmtMb(bufMb)}) is written to your drive. Turn on to keep it in memory and spare your SSD.`;
@@ -946,6 +995,7 @@ function fillControls(force = false) {
   set("#encoder", (el) => (el.value = c.encoder));
   set("#codec", (el) => (el.value = c.codec));
   set("#clipSeconds", (el) => (el.value = c.clip_seconds));
+  renderClipLen();
   set("#holdMinutes", (el) => (el.value = c.hold_minutes));
   set("#audioKbps", (el) => (el.value = c.audio_kbps));
   set("#audioOffset", (el) => (el.value = c.audio_offset_ms));
@@ -962,12 +1012,16 @@ function fillControls(force = false) {
   br.step = unit() === "mbps" ? 1 : 500;
   br.min = unit() === "mbps" ? 2 : 2000;
   br.max = unit() === "mbps" ? 150 : 150000;
-  set("#bitrate", (el) => (el.value = rateToInput(c.bitrate_kbps)));
-  $("#bitrateHint").textContent = `1080p60: ${fmtRate(25000)} to ${fmtRate(40000)}. 1440p60: ${fmtRate(40000)} to ${fmtRate(60000)}.`;
+  br.disabled = c.bitrate_auto;
+  $("#bitrateManual").checked = !c.bitrate_auto;
+  set("#bitrate", (el) => (el.value = rateToInput(effRate(c))));
+  $("#bitrateHint").textContent = c.bitrate_auto
+    ? "Picked for you from the resolution, frame rate and codec."
+    : `For these settings Clipr would pick ${fmtRate(autoRate(c))}.`;
   renderFps();
   renderHeight();
   renderGames();
-  $("#menuHotkey").textContent = c.hotkey;
+  $("#hkKey").textContent = c.hotkey;
   $("#customRateUnit").textContent = unitLabel();
 }
 
@@ -1021,7 +1075,11 @@ onChange("#audio", (el) => ({ audio: el.checked }));
 onChange("#gentleSave", (el) => ({ gentle_save: el.checked }));
 onChange("#bufferRam", (el) => ({ buffer_in_ram: el.checked }));
 onChange("#height", (el) => ({ height: Number(el.value) }));
+onChange("#qHeight", (el) => ({ height: Number(el.value) }));
 onChange("#fps", (el) => ({ fps: Number(el.value) }));
+onChange("#qFps", (el) => ({ fps: Number(el.value) }));
+onChange("#qClip", (el) => ({ clip_seconds: Number(el.value) }));
+onChange("#bitrateManual", (el) => (el.checked ? { bitrate_auto: false, bitrate_kbps: autoRate() } : { bitrate_auto: true }));
 onChange("#encoder", (el) => ({ encoder: el.value }));
 onChange("#codec", (el) => ({ codec: el.value }));
 onChange("#monitorSel", (el) => ({ monitor: el.value || null }));
@@ -1086,12 +1144,23 @@ $("#gameList").addEventListener("input", (e) => {
   const row = e.target.closest(".game");
   if (!row) return;
   const g = S.cfg.games[Number(row.dataset.i)];
-  if (e.target.dataset.k === "name") { g.name = e.target.value; schedule(700); }
   if (e.target.dataset.k === "enabled") {
     g.enabled = e.target.checked;
     row.classList.toggle("off", !g.enabled);
     schedule(150);
   }
+});
+// a new name is applied when you leave the field; the game's clips move to it
+$("#gameList").addEventListener("change", (e) => {
+  const row = e.target.closest(".game");
+  if (!row || e.target.dataset.k !== "name") return;
+  const g = S.cfg.games[Number(row.dataset.i)];
+  const name = e.target.value.trim();
+  if (!name) { e.target.value = g.name; return; }
+  if (name === g.name) return;
+  if (folderName(name) !== folderName(g.name)) S.renamedFrom.push(g.name);
+  g.name = name;
+  schedule(150);
 });
 $("#gameList").addEventListener("click", (e) => {
   if (e.target.dataset.k !== "remove") return;
@@ -1101,7 +1170,7 @@ $("#gameList").addEventListener("click", (e) => {
   schedule(150);
 });
 
-function addGame(exe, name) {
+function addGame(exe) {
   exe = exe.trim();
   if (!exe) return;
   if (!/\.exe$/i.test(exe)) exe += ".exe";
@@ -1109,7 +1178,7 @@ function addGame(exe, name) {
     toast(`${exe} is already in the list`);
     return;
   }
-  S.cfg.games.push({ exe, name: name || exe.replace(/\.exe$/i, ""), enabled: true });
+  S.cfg.games.push({ exe, name: exe.replace(/\.exe$/i, ""), enabled: true });
   renderGames();
   schedule(150);
 }
@@ -1124,14 +1193,12 @@ $("#refreshRunning").addEventListener("click", refreshRunning);
 $("#addRunning").addEventListener("click", () => {
   const sel = $("#runningSel");
   if (!sel.value) return;
-  addGame(sel.value, $("#runningName").value.trim());
-  $("#runningName").value = "";
+  addGame(sel.value);
   sel.value = "";
 });
 $("#addManual").addEventListener("click", () => {
-  addGame($("#manualExe").value, $("#manualName").value.trim());
+  addGame($("#manualExe").value);
   $("#manualExe").value = "";
-  $("#manualName").value = "";
 });
 $("#manualExe").addEventListener("keydown", (e) => { if (e.key === "Enter") $("#addManual").click(); });
 
@@ -1222,7 +1289,7 @@ async function renderFfHints() {
     ? `Your FFmpeg supports: ${f.encoders.map((e) => ({ nvenc: "NVIDIA", amf: "AMD", qsv: "Intel" }[e])).join(", ")}`
     : "This FFmpeg build has no hardware encoders.";
   $("#scaleHint").textContent = f.scale_d3d11 ? "" : "Native only: this FFmpeg can't resize on the GPU (needs FFmpeg 8).";
-  $$("#height option").forEach((o) => (o.disabled = !f.scale_d3d11 && o.value !== "0"));
+  renderHeight();
   renderEstimates();
 }
 
@@ -1331,8 +1398,9 @@ $("#settingsScroll").addEventListener("scroll", spy);
 (async function boot() {
   S.cfg = await invoke("get_config");
   try { S.monitors = await invoke("list_monitors"); } catch {}
-  $("#menuHotkey").textContent = S.cfg.hotkey;
-  $("#emptySub").innerHTML = `Clips are saved with <kbd>${esc(S.cfg.hotkey)}</kbd>, or File → Save clip now.`;
+  $("#emptySub").innerHTML = `Clips are saved with <kbd>${esc(S.cfg.hotkey)}</kbd>.`;
+  fillControls(true);
+  renderEstimates();
   $("#sortSel").value = S.sort;
   $("#groupBy").checked = S.group;
   renderStatus(await invoke("get_status"));

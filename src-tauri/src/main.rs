@@ -47,6 +47,14 @@ fn apply_config(app: &AppHandle, eng: &Engine, mut cfg: Config) -> Result<(), St
         let _ = app.asset_protocol_scope().allow_directory(&cfg.clips_dir, true);
     }
     cfg.save().map_err(e2s)?;
+    // A game's name changed: its clips follow it (older clips move to the new name's folder).
+    for g in &cfg.games {
+        if let Some(og) = old.games.iter().find(|o| o.exe.eq_ignore_ascii_case(&g.exe)) {
+            if og.name != g.name {
+                library::rename_game(&cfg, &og.name, &g.name);
+            }
+        }
+    }
     let changed = old != cfg;
     *eng.cfg.lock() = cfg;
     if changed {
@@ -261,8 +269,10 @@ async fn delete_exported_raws(eng: Eng<'_>) -> Result<Deleted, String> {
 }
 
 #[tauri::command]
-fn memory_info(eng: Eng<'_>) -> win::MemInfo {
-    eng.memory()
+async fn memory_info(eng: Eng<'_>) -> Result<win::MemInfo, String> {
+    // Off the main thread: it waits on the recorder, which must never freeze the window or tray.
+    let eng = eng.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || eng.memory()).await.map_err(e2s)
 }
 
 /// The clip's video codec ("h264", "hevc", ...), for size estimates.
@@ -292,7 +302,10 @@ async fn export_clip(app: AppHandle, eng: Eng<'_>, req: export::ExportRequest) -
         let out = export::export(&cfg, &req, |pct| {
             let _ = app.emit("export-progress", serde_json::json!({ "path": path, "pct": pct }));
         })?;
-        library::record_export(&req.path, &out);
+        // A screenshot isn't a trimmed version of the clip, so it doesn't mark the raw as exported.
+        if req.format != export::ExportFormat::Png {
+            library::record_export(&req.path, &out);
+        }
         Ok::<_, anyhow::Error>(out.to_string_lossy().into_owned())
     })
     .await
@@ -351,26 +364,68 @@ pub(crate) fn save_in_background(app: &AppHandle) {
 /// The window is created on demand and destroyed on close, so while you game
 /// there is no webview in memory at all — just the tiny Rust core + ffmpeg.
 pub(crate) fn show_main(app: &AppHandle) {
-    if let Some(w) = app.get_webview_window("main") {
-        let _ = w.unminimize();
-        let _ = w.show();
-        let _ = w.set_focus();
-        return;
-    }
     let app = app.clone();
     // Building a window inside an event handler can deadlock on Windows; use a thread.
+    // Opening must never silently fail (a window still closing, WebView2 hiccup), so retry.
     std::thread::spawn(move || {
-        let _ = WebviewWindowBuilder::new(&app, "main", WebviewUrl::App("index.html".into()))
-            .title("Clipr")
-            .inner_size(1240.0, 780.0)
-            .min_inner_size(960.0, 600.0)
-            .build();
+        for _ in 0..8 {
+            if let Some(w) = app.get_webview_window("main") {
+                if w.show().is_ok() {
+                    let _ = w.unminimize();
+                    let _ = w.set_focus();
+                    // If it was one that is just being destroyed, it will be gone shortly: go round again.
+                    std::thread::sleep(std::time::Duration::from_millis(400));
+                    if app.get_webview_window("main").is_some() {
+                        return;
+                    }
+                    continue;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(300));
+                continue;
+            }
+            let built = WebviewWindowBuilder::new(&app, "main", WebviewUrl::App("index.html".into()))
+                .title("Clipr")
+                .inner_size(1240.0, 780.0)
+                .min_inner_size(960.0, 600.0)
+                .build();
+            if built.is_ok() {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(300));
+        }
     });
 }
 
 // ---------------------------------------------------------------------- main
 
+/// If the app's main thread stops answering (a hung webview, a stuck driver call), a background
+/// thread notices and restarts Clipr, so a frozen copy can never block you from opening it again.
+fn start_self_heal(app: AppHandle) {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    fn secs() -> u64 {
+        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
+    }
+    let last_ok = Arc::new(AtomicU64::new(secs()));
+    std::thread::spawn(move || loop {
+        std::thread::sleep(std::time::Duration::from_secs(10));
+        let ok = last_ok.clone();
+        let _ = app.run_on_main_thread(move || ok.store(secs(), Ordering::Relaxed));
+        if secs().saturating_sub(last_ok.load(Ordering::Relaxed)) > 90 {
+            if let Ok(exe) = std::env::current_exe() {
+                // The new copy waits a moment (see main) so this one is gone before it starts.
+                if std::process::Command::new(exe).args(["--hidden", "--relaunch"]).spawn().is_ok() {
+                    std::process::exit(1);
+                }
+            }
+            return;
+        }
+    });
+}
+
 fn main() {
+    if std::env::args().any(|a| a == "--relaunch") {
+        std::thread::sleep(std::time::Duration::from_secs(3));
+    }
     tauri::Builder::default()
         // Must be first: a second Clipr.exe hands over to this one and exits.
         .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
@@ -453,6 +508,7 @@ fn main() {
             }
             tray::build(app)?;
             std::thread::spawn(move || engine.run_watcher());
+            start_self_heal(app.handle().clone());
 
             if !start_hidden {
                 show_main(app.handle());

@@ -11,20 +11,13 @@
 <header class="topbar">
   <div class="brand"><span class="brand-mark" aria-hidden="true"></span>Clipr</div>
   <nav class="tabs" id="tabs" role="tablist">
-    <button class="menu-btn" id="tabFile" data-tab="file" data-menu="file-menu" aria-haspopup="true" aria-expanded="false">File</button>
     <button class="tab" id="tabSettings" data-tab="settings" role="tab">Settings</button>
     <button class="tab active" id="tabLibrary" data-tab="library" role="tab">Library</button>
   </nav>
-  <div>
-    <div class="menu" id="file-menu" role="menu" hidden>
-      <button class="menu-item" data-action="save-clip">Save clip now<span class="shortcut" id="menuHotkey"></span></button>
-      <button class="menu-item" data-action="open-folder">Open clips folder</button>
-      <div class="menu-sep"></div>
-      <button class="menu-item" data-action="data-folder">Open data folder</button>
-      <div class="menu-sep"></div>
-      <button class="menu-item" data-action="hide">Hide to tray<span class="shortcut">Esc</span></button>
-      <button class="menu-item" data-action="quit">Quit<span class="shortcut">Ctrl+Q</span></button>
-    </div>
+  <div class="quick" id="quick" role="group" aria-label="Quick settings">
+    <label>Clip length <select id="qClip" aria-label="Clip length"></select></label>
+    <label>Resolution <select id="qHeight" aria-label="Resolution"></select></label>
+    <label>Frame rate <select id="qFps" aria-label="Frame rate"></select></label>
   </div>
   <div class="topright">
     <label class="target" id="targetWrap" hidden>Recording
@@ -34,6 +27,7 @@
     <div class="status" id="status" title="">
       <span class="tally" aria-hidden="true"></span><span id="statusText">Starting</span>
     </div>
+    <div class="hk" id="hkRemind" title="Your clip shortcut. Change it in Settings, Shortcuts.">Clip <kbd id="hkKey"></kbd></div>
   </div>
 </header>
 
@@ -140,9 +134,10 @@
                 <option value="mov">.mov</option>
                 <option value="webm">.webm</option>
                 <option value="gif">.gif</option>
+                <option value="png">.png (screenshot)</option>
               </select>
             </label>
-            <label class="inline">Codec
+            <label class="inline" id="expCodecWrap">Codec
               <select id="expCodec">
                 <option value="keep">Same as clip</option>
                 <option value="h264">H.264</option>
@@ -177,7 +172,7 @@
               </select>
             </label>
             <label class="check" id="expPreciseWrap"><input type="checkbox" id="expPrecise"> Exact size (slower)</label>
-            <label class="check" title="Idle priority and fewer threads: slower, but won't cost a running game frames."><input type="checkbox" id="expLow"> Low impact (use while gaming)</label>
+            <label class="check" id="expLowWrap" title="Idle priority and fewer threads: slower, but won't cost a running game frames."><input type="checkbox" id="expLow"> Low impact (use while gaming)</label>
           </div>
           <div class="export-row">
             <div class="grow"></div>
@@ -199,7 +194,6 @@
       <button class="item active" data-group="general">General</button>
       <button class="item" data-group="capture">Capture</button>
       <button class="item" data-group="games">Games</button>
-      <button class="item" data-group="video">Video</button>
       <button class="item" data-group="audio">Audio</button>
       <button class="item" data-group="storage">Storage</button>
       <button class="item" data-group="shortcuts">Shortcuts</button>
@@ -208,7 +202,6 @@
     </nav>
     <div class="settings" id="settingsScroll">
       <div class="settings-head">
-        <button class="link" id="settingsBack"><svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true" style="vertical-align:-1px"><path d="M11 6H1M5 2L1 6l4 4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg> Back</button>
         <h2>Settings</h2>
         <span class="label" id="savedMsg" aria-live="polite">Saved</span>
       </div>
@@ -248,7 +241,7 @@
 
       <section class="group" id="g-capture">
         <h3>Capture</h3>
-        <p class="hint">What gets recorded, and when.</p>
+        <p class="hint">What gets recorded, and how it looks. Higher quality costs more GPU and disk or RAM.</p>
         <div class="field">
           <div class="seg wide" id="captureSeg">
             <button data-mode="games">Only my games</button>
@@ -268,51 +261,10 @@
           </div>
           <p class="hint" id="methodHint"></p>
         </div>
-        <div class="field">
-          <label class="check"><input type="checkbox" id="drawMouse"> Show the mouse cursor</label>
-        </div>
-        <div class="field">
-          <label for="holdMinutes">Keep the buffer after a game closes</label>
-          <div class="row"><input type="number" id="holdMinutes" min="0" max="60" step="1" style="width:110px"><span class="unit">minutes</span></div>
-          <p class="hint">You can still save a clip with the hotkey until this runs out or another recording starts. 0 clears the buffer as soon as the game closes.</p>
-        </div>
-        <div class="field">
-          <label class="check"><input type="checkbox" id="gentleSave"> Go easy on my PC while saving a clip</label>
-          <p class="hint">Saving a clip runs at low priority, so it can take a moment longer instead of costing you frames. Exporting is separate: it runs at full speed unless you tick Low impact in the export area.</p>
-        </div>
-      </section>
-
-      <section class="group" id="g-games">
-        <h3>Games</h3>
-        <div class="field">
-          <p class="hint">Recording starts when one of these is running and stops when it closes. If several are open, Clipr picks the one you've clipped most; switch from the top bar. Clips are filed under the name shown here. Click a name to change it; new clips use the new name, older clips stay where they are.</p>
-          <div id="gameList" class="game-list"></div>
-          <div class="add-row">
-            <select id="runningSel" aria-label="Running apps"><option value="">Add a running app…</option></select>
-            <input id="runningName" placeholder="Name to show (optional)" aria-label="Name to show for the running app">
-            <button class="btn sm ghost" id="refreshRunning" title="Refresh list">Refresh</button>
-            <button class="btn sm" id="addRunning">Add</button>
-          </div>
-          <div class="add-row">
-            <input id="manualExe" placeholder="Or type the exe name, like cs2.exe">
-            <input id="manualName" placeholder="Name to show (optional)" aria-label="Name to show for the typed exe">
-            <button class="btn sm" id="addManual">Add</button>
-          </div>
-        </div>
-      </section>
-
-      <section class="group" id="g-video">
-        <h3>Video</h3>
-        <p class="hint">Quality of what's buffered. Higher costs more GPU and disk or RAM.</p>
         <div class="grid">
           <div class="field">
             <label for="height">Resolution</label>
-            <select id="height">
-              <option value="0">Native</option>
-              <option value="1440">1440p</option>
-              <option value="1080">1080p</option>
-              <option value="720">720p</option>
-            </select>
+            <select id="height"></select>
             <p class="hint" id="scaleHint"></p>
           </div>
           <div class="field">
@@ -322,7 +274,8 @@
           </div>
           <div class="field">
             <label for="bitrate" id="bitrateLabel">Bitrate</label>
-            <div class="row"><input type="number" id="bitrate" class="grow"><span class="unit" id="bitrateUnit"></span></div>
+            <div class="row"><input type="number" id="bitrate" class="grow" disabled><span class="unit" id="bitrateUnit"></span></div>
+            <label class="check small"><input type="checkbox" id="bitrateManual"> Set the bitrate myself</label>
             <p class="hint" id="bitrateHint"></p>
           </div>
           <div class="field">
@@ -349,6 +302,35 @@
         <div class="field">
           <label>Estimate</label>
           <div class="card" id="clipEstimate"></div>
+        </div>
+        <div class="field">
+          <label class="check"><input type="checkbox" id="drawMouse"> Show the mouse cursor</label>
+        </div>
+        <div class="field">
+          <label for="holdMinutes">Keep the buffer after a game closes</label>
+          <div class="row"><input type="number" id="holdMinutes" min="0" max="60" step="1" style="width:110px"><span class="unit">minutes</span></div>
+          <p class="hint">You can still save a clip with the hotkey until this runs out or another recording starts. 0 clears the buffer as soon as the game closes.</p>
+        </div>
+        <div class="field">
+          <label class="check"><input type="checkbox" id="gentleSave"> Go easy on my PC while saving a clip</label>
+          <p class="hint">Saving a clip runs at low priority, so it can take a moment longer instead of costing you frames. Exporting is separate: it runs at full speed unless you tick Low impact in the export area.</p>
+        </div>
+      </section>
+
+      <section class="group" id="g-games">
+        <h3>Games</h3>
+        <div class="field">
+          <p class="hint">Recording starts when one of these is running and stops when it closes. If several are open, Clipr picks the one you've clipped most; switch from the top bar. Clips are filed under the name shown here. Click a name to change it: your existing clips move to the new name too.</p>
+          <div id="gameList" class="game-list"></div>
+          <div class="add-row">
+            <select id="runningSel" aria-label="Running apps"><option value="">Add a running app…</option></select>
+            <button class="btn sm ghost" id="refreshRunning" title="Refresh list">Refresh</button>
+            <button class="btn sm" id="addRunning">Add</button>
+          </div>
+          <div class="add-row">
+            <input id="manualExe" placeholder="Or type the exe name, like cs2.exe">
+            <button class="btn sm" id="addManual">Add</button>
+          </div>
         </div>
       </section>
 
@@ -460,7 +442,6 @@
 </dialog>
 
 <div class="toasts" id="toasts" aria-live="polite"></div>
-<script src="menu.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

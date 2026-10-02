@@ -4,6 +4,7 @@
 //!  * size / bitrate                        -> GPU encode at a computed bitrate (fast); size mode re-tries once if over
 //!  * exact size                            -> CPU two-pass (x264 or x265), slowest, lands closest to the target size
 //!  * .gif                                  -> palette-based CPU encode, no audio, capped frame rate and size
+//!  * .png                                  -> one raw frame at `start`, straight from the clip (lossless, no scaling)
 //!  * .webm                                 -> always re-encoded with VP9 + Opus (.webm can't hold H.264/AAC)
 //!
 //! Exports run at normal priority on all cores; `low_impact` drops to idle priority with a few threads.
@@ -25,6 +26,7 @@ pub enum ExportFormat {
     Mov,
     Webm,
     Gif,
+    Png,
 }
 
 impl ExportFormat {
@@ -35,6 +37,7 @@ impl ExportFormat {
             ExportFormat::Mov => "mov",
             ExportFormat::Webm => "webm",
             ExportFormat::Gif => "gif",
+            ExportFormat::Png => "png",
         }
     }
 }
@@ -122,11 +125,35 @@ pub fn clean_stem(name: &str, ext: &str) -> String {
     if s == "Unknown" && n.trim().is_empty() { String::new() } else { s.chars().take(120).collect() }
 }
 
+/// A screenshot: the single frame at `req.start`, decoded straight from the clip and saved as .png.
+fn export_frame(cfg: &Config, req: &ExportRequest, input: &Path) -> Result<PathBuf> {
+    let game = sanitize_name(&library::game_of(input));
+    let src_stem = input.file_stem().unwrap_or_default().to_string_lossy().into_owned();
+    let custom = clean_stem(&req.name, "png");
+    let stem = if custom.is_empty() { format!("{src_stem}_frame") } else { custom };
+    let out = unique(cfg.exports_dir().join(&game).join("Screenshots").join(format!("{stem}.png")));
+    std::fs::create_dir_all(out.parent().unwrap())?;
+    let ss = format!("{:.3}", req.start.max(0.0));
+    let mut c = ff::cmd(&cfg.ffmpeg);
+    c.args(["-hide_banner", "-loglevel", "error", "-y", "-ss", &ss, "-i"])
+        .arg(input)
+        .args(["-map", "0:v:0", "-frames:v", "1", "-an", "-c:v", "png"])
+        .arg(&out);
+    ff::run(c).context("Couldn't grab that frame")?;
+    if !out.is_file() {
+        bail!("Couldn't grab that frame. Try a spot a little earlier in the clip.");
+    }
+    Ok(out)
+}
+
 /// `progress` gets the fraction done (0..1).
 pub fn export(cfg: &Config, req: &ExportRequest, progress: impl Fn(f64)) -> Result<PathBuf> {
     let input = PathBuf::from(&req.path);
     if !input.is_file() {
         bail!("Clip not found: {}", req.path);
+    }
+    if req.format == ExportFormat::Png {
+        return export_frame(cfg, req, &input);
     }
     let dur = req.end - req.start;
     if dur < 0.2 {

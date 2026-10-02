@@ -79,7 +79,7 @@ impl RecordSpec {
         } else {
             cfg.fps
         };
-        RecordSpec {
+        let mut spec = RecordSpec {
             adapter: m.adapter,
             output: m.output,
             src_w,
@@ -99,7 +99,23 @@ impl RecordSpec {
             ram: cfg.buffer_in_ram,
             ffmpeg: cfg.ffmpeg.clone(),
             buffer_dir: cfg.buffer_dir(),
+        };
+        spec.apply_auto_bitrate(cfg);
+        spec
+    }
+
+    /// With automatic bitrate, derive it from this spec's output size, frame rate and codec.
+    /// Call again after changing `fps` by hand.
+    pub fn apply_auto_bitrate(&mut self, cfg: &Config) {
+        if !cfg.bitrate_auto {
+            return;
         }
+        let (w, h) = if self.height != 0 && self.height < self.src_h {
+            (even_down(self.src_w * self.height / self.src_h), even_down(self.height))
+        } else {
+            (self.src_w, self.src_h)
+        };
+        self.bitrate_kbps = crate::config::auto_bitrate(w, h, self.fps, self.codec);
     }
 }
 

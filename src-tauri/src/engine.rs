@@ -293,6 +293,7 @@ impl Engine {
             s.output = cur.output;
             if cfg.fps == 0 {
                 s.fps = cur.fps;
+                s.apply_auto_bitrate(cfg);
             }
             return Some(s);
         }

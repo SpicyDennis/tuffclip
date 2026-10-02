@@ -146,6 +146,66 @@ fn has_export(raw: &str) -> bool {
     with_log(|m| m.get(&norm(raw)).is_some_and(|v| v.iter().any(|e| Path::new(e).is_file())))
 }
 
+// ------------------------------------------------------------------ game renames
+
+/// A game's display name changed: move its clip folders (raw and exports) to the new name and
+/// keep `exported.json` pointing at the moved files. File names stay as they are. If a file is in
+/// use (a clip playing), the move is skipped and the clips stay under the old name.
+pub fn rename_game(cfg: &Config, old: &str, new: &str) {
+    let (o, n) = (crate::engine::sanitize_name(old), crate::engine::sanitize_name(new));
+    if o == n {
+        return;
+    }
+    let case_only = o.to_lowercase() == n.to_lowercase();
+    let mut moved: Vec<(String, String)> = Vec::new(); // old dir -> new dir, as strings
+    for root in [cfg.raw_dir(), cfg.exports_dir()] {
+        let (from, to) = (root.join(&o), root.join(&n));
+        if !from.is_dir() {
+            continue;
+        }
+        if case_only || !to.exists() {
+            if fs::rename(&from, &to).is_ok() {
+                moved.push((from.to_string_lossy().into_owned(), to.to_string_lossy().into_owned()));
+            }
+            continue;
+        }
+        // The new folder already exists (another game or an earlier name): merge, never overwrite.
+        let Ok(rd) = fs::read_dir(&from) else { continue };
+        for f in rd.flatten() {
+            let dest = to.join(f.file_name());
+            if !dest.exists() && fs::rename(f.path(), &dest).is_ok() {
+                moved.push((f.path().to_string_lossy().into_owned(), dest.to_string_lossy().into_owned()));
+            }
+        }
+        let _ = fs::remove_dir(&from); // only succeeds when empty
+    }
+    if moved.is_empty() {
+        return;
+    }
+    with_log(|m| {
+        let remap = |p: &str| -> String {
+            let lp = norm(p);
+            for (a, b) in &moved {
+                let na = norm(a);
+                if lp == na {
+                    return b.clone();
+                }
+                if lp.starts_with(&format!("{na}\\")) && p.len() >= a.len() {
+                    return format!("{b}{}", &p[a.len()..]);
+                }
+            }
+            p.to_string()
+        };
+        let old_map = std::mem::take(m);
+        for (k, v) in old_map {
+            let nk = norm(&remap(&k));
+            let nv: Vec<String> = v.iter().map(|e| remap(e)).collect();
+            m.insert(nk, nv);
+        }
+        persist(m);
+    });
+}
+
 // ------------------------------------------------------------------ storage
 
 #[derive(Serialize, Default)]
