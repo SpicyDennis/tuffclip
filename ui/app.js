@@ -74,16 +74,17 @@ function showView(v) {
   $("#view-library").hidden = v !== "library";
   $("#view-settings").hidden = v !== "settings";
   $("#tabLibrary").classList.toggle("active", v === "library");
+  $("#tabSettings").classList.toggle("active", v === "settings");
   if (v === "settings") openSettings();
 }
 $("#tabLibrary").addEventListener("click", () => showView("library"));
+$("#tabSettings").addEventListener("click", () => showView("settings"));
 $("#settingsBack").addEventListener("click", () => showView("library"));
 
 document.addEventListener("menu-action", (e) => {
   switch (e.detail) {
     case "save-clip": invoke("save_clip_now").catch(() => {}); break;
     case "open-folder": invoke("open_clips_folder", { kind: S.kind }).catch((x) => toast(x, true)); break;
-    case "settings": showView("settings"); break;
     case "data-folder": invoke("open_data_folder").catch((x) => toast(x, true)); break;
     case "hide": invoke("hide_window"); break;
     case "quit": invoke("quit_app"); break;
