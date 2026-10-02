@@ -220,7 +220,7 @@ function renderTarget(st) {
   }
   if (document.activeElement !== sel && st.target) sel.value = st.target;
 }
-$("#targetWrap").title = "Several of your games are running. Clipr records the one you've clipped most; pick another to switch (this restarts its buffer).";
+$("#targetWrap").title = "Several of your games are running. TUFFClip records the one you've clipped most; pick another to switch (this restarts its buffer).";
 $("#targetSel").addEventListener("change", (e) => invoke("set_target", { exe: e.target.value }).catch((x) => toast(String(x), true)));
 
 function renderStatus(st) {
@@ -983,8 +983,8 @@ function fillControls(force = false) {
       ? "Records the game's window, only while one of your games is running. Nothing runs otherwise."
       : "Records the chosen monitor all the time. Clips made while a listed game is focused are still filed under that game.";
   $("#closeHint").textContent = c.close_to_tray
-    ? "The X closes this window; Clipr keeps recording from the tray."
-    : "The X quits Clipr completely, which also stops recording.";
+    ? "The X closes this window; TUFFClip keeps recording from the tray."
+    : "The X quits TUFFClip completely, which also stops recording.";
   set("#monitorSel", (el) => { if (c.monitor) el.value = c.monitor; });
   set("#drawMouse", (el) => (el.checked = c.draw_mouse));
   set("#startHidden", (el) => (el.checked = c.start_hidden));
@@ -1020,7 +1020,7 @@ function fillControls(force = false) {
   set("#bitrate", (el) => (el.value = rateToInput(effRate(c))));
   $("#bitrateHint").textContent = c.bitrate_auto
     ? "Picked for you from the resolution, frame rate and codec."
-    : `For these settings Clipr would pick ${fmtRate(autoRate(c))}.`;
+    : `For these settings TUFFClip would pick ${fmtRate(autoRate(c))}.`;
   renderFps();
   renderHeight();
   renderGames();
@@ -1046,7 +1046,7 @@ async function openSettings() {
   try {
     const info = await invoke("app_info");
     $("#autostart").checked = info.autostart;
-    $("#aboutName").textContent = `Clipr ${info.version}`;
+    $("#aboutName").textContent = `TUFFClip ${info.version}`;
     $("#aboutBuild").textContent = `Built ${info.build_date}`;
     $("#dataPath").textContent = info.data_dir;
   } catch {}
@@ -1282,7 +1282,7 @@ async function renderFfHints() {
   $("#ffBanner").hidden = !!f.ok;
   $("#ffBannerBtn").hidden = !!f.ok ? true : false;
   if (!f.ok) {
-    $("#ffBannerText").textContent = "FFmpeg isn't set up yet. Clipr needs it to record and export.";
+    $("#ffBannerText").textContent = "FFmpeg isn't set up yet. TUFFClip needs it to record and export.";
     $("#ffHint").textContent = "FFmpeg wasn't found. Use the button above to download it, or enter the full path to ffmpeg.exe.";
     $("#encHint").textContent = "";
     return;
@@ -1306,7 +1306,7 @@ async function renderStorage() {
   $("#cleanupBtn").disabled = !s.done_count;
   $("#cleanupHint").textContent = s.done_count
     ? `${plural(s.done_count, "raw clip")} (${fmtSize(s.done_bytes)}) already ${s.done_count === 1 ? "has" : "have"} a trimmed version. Your exported clips aren't touched.`
-    : "No raw clips have a trimmed version yet. Clipr remembers which ones you've exported.";
+    : "No raw clips have a trimmed version yet. TUFFClip remembers which ones you've exported.";
 }
 $("#openClips").addEventListener("click", () => invoke("open_clips_folder", { kind: "all" }).catch((e) => toast(e, true)));
 $("#cleanupBtn").addEventListener("click", async () => {
@@ -1334,7 +1334,7 @@ async function pollMem() {
     const st = S.status || {};
     const usedPct = m.system_total ? Math.round((m.system_used / m.system_total) * 100) : 0;
     $("#memCard").innerHTML =
-      `Clipr and ffmpeg use <b>${fmtSize(m.clipr_bytes)}</b>` +
+      `TUFFClip and ffmpeg use <b>${fmtSize(m.tuffclip_bytes)}</b>` +
       (st.buffer_ram && st.buffer_bytes ? `, including a RAM buffer of <b>${fmtSize(st.buffer_bytes)}</b>` : "") + `.<br>` +
       `Your PC: <b>${fmtSize(m.system_used)}</b> of ${fmtSize(m.system_total)} in use (${usedPct}%)`;
     $("#memBar").style.width = usedPct + "%";
@@ -1412,7 +1412,7 @@ $("#settingsScroll").addEventListener("scroll", spy);
   renderFfHints(); // shows the download strip if FFmpeg is missing
   try {
     const info = await invoke("app_info");
-    if (info.config_broken) toast("Your settings file was damaged, so Clipr started with defaults. The old file is saved as config.broken.json.", true);
+    if (info.config_broken) toast("Your settings file was damaged, so TUFFClip started with defaults. The old file is saved as config.broken.json.", true);
   } catch {}
 
   listen("status", (e) => renderStatus(e.payload));

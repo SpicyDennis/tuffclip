@@ -112,18 +112,19 @@ fn reg(args: &[&str]) -> std::io::Result<std::process::ExitStatus> {
 }
 
 fn autostart_enabled() -> bool {
-    reg(&["query", RUN_KEY, "/v", "Clipr"]).map(|s| s.success()).unwrap_or(false)
+    reg(&["query", RUN_KEY, "/v", "TUFFClip"]).map(|s| s.success()).unwrap_or(false)
 }
 
 fn set_autostart(on: bool) -> Result<(), String> {
+    let _ = reg(&["delete", RUN_KEY, "/v", "Clipr", "/f"]); // entry from before the rename
     if on {
         let exe = std::env::current_exe().map_err(e2s)?;
         let value = format!("\"{}\" --hidden", exe.display());
-        reg(&["add", RUN_KEY, "/v", "Clipr", "/t", "REG_SZ", "/d", &value, "/f"])
+        reg(&["add", RUN_KEY, "/v", "TUFFClip", "/t", "REG_SZ", "/d", &value, "/f"])
             .map_err(e2s)
-            .and_then(|s| if s.success() { Ok(()) } else { Err("Windows wouldn't let Clipr add itself to startup.".into()) })
+            .and_then(|s| if s.success() { Ok(()) } else { Err("Windows wouldn't let TUFFClip add itself to startup.".into()) })
     } else {
-        let _ = reg(&["delete", RUN_KEY, "/v", "Clipr", "/f"]);
+        let _ = reg(&["delete", RUN_KEY, "/v", "TUFFClip", "/f"]);
         Ok(())
     }
 }
@@ -319,7 +320,7 @@ async fn ffmpeg_info(eng: Eng<'_>) -> Result<ff::FfInfo, String> {
     tauri::async_runtime::spawn_blocking(move || ff::info(&path)).await.map_err(e2s)
 }
 
-/// Download FFmpeg into Clipr's data folder and point the setting at it. Returns the new path.
+/// Download FFmpeg into TUFFClip's data folder and point the setting at it. Returns the new path.
 #[tauri::command]
 async fn download_ffmpeg(app: AppHandle, eng: Eng<'_>) -> Result<String, String> {
     let dir = config::data_dir().join("ffmpeg");
@@ -384,7 +385,7 @@ pub(crate) fn show_main(app: &AppHandle) {
                 continue;
             }
             let built = WebviewWindowBuilder::new(&app, "main", WebviewUrl::App("index.html".into()))
-                .title("Clipr")
+                .title("TUFFClip")
                 .inner_size(1240.0, 780.0)
                 .min_inner_size(960.0, 600.0)
                 .build();
@@ -399,7 +400,7 @@ pub(crate) fn show_main(app: &AppHandle) {
 // ---------------------------------------------------------------------- main
 
 /// If the app's main thread stops answering (a hung webview, a stuck driver call), a background
-/// thread notices and restarts Clipr, so a frozen copy can never block you from opening it again.
+/// thread notices and restarts TUFFClip, so a frozen copy can never block you from opening it again.
 fn start_self_heal(app: AppHandle) {
     use std::sync::atomic::{AtomicU64, Ordering};
     fn secs() -> u64 {
@@ -427,7 +428,7 @@ fn main() {
         std::thread::sleep(std::time::Duration::from_secs(3));
     }
     tauri::Builder::default()
-        // Must be first: a second Clipr.exe hands over to this one and exits.
+        // Must be first: a second TUFFClip.exe hands over to this one and exits.
         .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
             if !args.iter().any(|a| a == "--hidden") {
                 show_main(app);
@@ -516,9 +517,9 @@ fn main() {
             Ok(())
         })
         .build(tauri::generate_context!())
-        .expect("failed to build Clipr")
+        .expect("failed to build TUFFClip")
         .run(|app, event| match event {
-            // Closing the window keeps Clipr running in the tray.
+            // Closing the window keeps TUFFClip running in the tray.
             tauri::RunEvent::ExitRequested { api, code: None, .. } => api.prevent_exit(),
             tauri::RunEvent::Exit => app.state::<Arc<Engine>>().shutdown(),
             _ => {}

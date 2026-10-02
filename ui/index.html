@@ -3,13 +3,13 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Clipr</title>
+<title>TUFFClip</title>
 <link rel="stylesheet" href="theme.css" />
 <link rel="stylesheet" href="style.css" />
 </head>
 <body>
 <header class="topbar">
-  <div class="brand"><span class="brand-mark" aria-hidden="true"></span>Clipr</div>
+  <div class="brand"><img class="brand-logo" src="logo.png" alt="" aria-hidden="true">TUFFClip</div>
   <nav class="tabs" id="tabs" role="tablist">
     <button class="tab" id="tabSettings" data-tab="settings" role="tab">Settings</button>
     <button class="tab active" id="tabLibrary" data-tab="library" role="tab">Library</button>
@@ -32,7 +32,7 @@
 </header>
 
 <div class="banner" id="ffBanner" hidden>
-  <span id="ffBannerText">FFmpeg isn't set up yet. Clipr needs it to record and export.</span>
+  <span id="ffBannerText">FFmpeg isn't set up yet. TUFFClip needs it to record and export.</span>
   <button class="btn sm" id="ffBannerBtn">Download FFmpeg</button>
 </div>
 
@@ -208,7 +208,7 @@
 
       <section class="group" id="g-general">
         <h3>General</h3>
-        <p class="hint">How Clipr starts and what it tells you. Changes save as you make them.</p>
+        <p class="hint">How TUFFClip starts and what it tells you. Changes save as you make them.</p>
         <div class="field">
           <label class="check"><input type="checkbox" id="autostart"> Start with Windows</label>
           <p class="hint">Opens hidden in the tray when you sign in.</p>
@@ -235,7 +235,7 @@
             <button data-unit="mbps">Megabits (Mbps)</button>
             <button data-unit="kbps">Kilobits (kbps)</button>
           </div>
-          <p class="hint">Applies everywhere in Clipr, including the numbers you type.</p>
+          <p class="hint">Applies everywhere in TUFFClip, including the numbers you type.</p>
         </div>
       </section>
 
@@ -320,7 +320,7 @@
       <section class="group" id="g-games">
         <h3>Games</h3>
         <div class="field">
-          <p class="hint">Recording starts when one of these is running and stops when it closes. If several are open, Clipr picks the one you've clipped most; switch from the top bar. Clips are filed under the name shown here. Click a name to change it: your existing clips move to the new name too.</p>
+          <p class="hint">Recording starts when one of these is running and stops when it closes. If several are open, TUFFClip picks the one you've clipped most; switch from the top bar. Clips are filed under the name shown here. Click a name to change it: your existing clips move to the new name too.</p>
           <div id="gameList" class="game-list"></div>
           <div class="add-row">
             <select id="runningSel" aria-label="Running apps"><option value="">Add a running app…</option></select>
@@ -368,7 +368,7 @@
           <div class="row">
             <button class="btn danger" id="cleanupBtn" disabled>Delete raw clips that were already exported</button>
           </div>
-          <p class="hint" id="cleanupHint">Clipr remembers which raw clips you've exported a trimmed version of.</p>
+          <p class="hint" id="cleanupHint">TUFFClip remembers which raw clips you've exported a trimmed version of.</p>
         </div>
         <div class="field">
           <label>Memory</label>
@@ -401,7 +401,7 @@
 
       <section class="group" id="g-advanced">
         <h3>Advanced</h3>
-        <p class="hint">Tools and files Clipr depends on.</p>
+        <p class="hint">Tools and files TUFFClip depends on.</p>
         <div class="field">
           <label for="ffmpeg">FFmpeg location</label>
           <input id="ffmpeg">
@@ -419,7 +419,7 @@
 
       <section class="group" id="g-about">
         <h3>About</h3>
-        <div class="about-name" id="aboutName">Clipr</div>
+        <div class="about-name" id="aboutName">TUFFClip</div>
         <p class="hint" id="aboutBuild"></p>
         <div class="row">
           <span class="mono grow" id="dataPath"></span>

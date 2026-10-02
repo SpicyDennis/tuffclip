@@ -546,12 +546,12 @@ impl Engine {
         let hk = if cfg.hotkey2.is_empty() { cfg.hotkey.clone() } else { format!("{} / {}", cfg.hotkey, cfg.hotkey2) };
         let game = short(st.game.as_deref().unwrap_or("Desktop"), 24);
         let (kind, tip) = if let Some(e) = &st.error {
-            (tray::Kind::Idle, format!("Clipr · {}", short(e, 80)))
+            (tray::Kind::Idle, format!("TUFFClip · {}", short(e, 80)))
         } else if st.recording {
             (
                 tray::Kind::Recording,
                 format!(
-                    "Clipr · Recording {game}\n{}\n{} buffer · {} s clips · {hk}",
+                    "TUFFClip · Recording {game}\n{}\n{} buffer · {} s clips · {hk}",
                     st.summary,
                     if st.buffer_ram { "RAM" } else { "Disk" },
                     cfg.clip_seconds
@@ -561,12 +561,12 @@ impl Engine {
             let mins = until.saturating_sub(now_ms()).div_ceil(60_000).max(1);
             (
                 tray::Kind::Held,
-                format!("Clipr · {game} closed\nLast buffer kept for {mins} more min\n{hk} still saves it"),
+                format!("TUFFClip · {game} closed\nLast buffer kept for {mins} more min\n{hk} still saves it"),
             )
         } else if cfg.mode == CaptureMode::Games {
-            (tray::Kind::Idle, "Clipr · Waiting for a game".to_string())
+            (tray::Kind::Idle, "TUFFClip · Waiting for a game".to_string())
         } else {
-            (tray::Kind::Idle, "Clipr · Not recording".to_string())
+            (tray::Kind::Idle, "TUFFClip · Not recording".to_string())
         };
         let tip: String = tip.chars().take(120).collect();
         let key = format!("{}|{tip}", kind as u8);

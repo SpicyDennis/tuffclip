@@ -1,6 +1,6 @@
 @echo off
 setlocal
-title Building Clipr
+title Building TUFFClip
 rem Works from wherever this folder lives (Desktop, Documents, ...).
 set "ROOT=%~dp0"
 set "OUT=%ROOT%build"
@@ -8,7 +8,7 @@ set "TOTAL=4"
 
 call :now T0
 echo.
-echo === Clipr build ===
+echo === TUFFClip build ===
 echo Started at %time:~0,8%. Each step prints when it starts and how long it took.
 echo.
 
@@ -43,10 +43,10 @@ if errorlevel 1 (
 )
 echo.
 
-echo [3/%TOTAL%] Compiling Clipr ^(cargo tauri build^)...
+echo [3/%TOTAL%] Compiling TUFFClip ^(cargo tauri build^)...
 echo   First build: several minutes. Later builds: usually under a minute.
 echo   Watch the "Compiling ..." lines below. If they keep changing, it is working.
-echo   The last step ^(the clipr crate: full optimisation + linking^) can sit on one
+echo   The last step ^(the tuffclip crate: full optimisation + linking^) can sit on one
 echo   line for several minutes. A "still working" line with the elapsed time is
 echo   printed every 15 seconds while it runs, so you can tell it is not stuck.
 echo.
@@ -65,11 +65,11 @@ echo.
 echo   Compiled in %SPENT%.
 echo.
 
-echo [4/%TOTAL%] Copying Clipr.exe to the build folder...
+echo [4/%TOTAL%] Copying TUFFClip.exe to the build folder...
 if not exist "%OUT%" mkdir "%OUT%"
-copy /y "%ROOT%src-tauri\target\release\clipr.exe" "%OUT%\Clipr.exe" >nul
+copy /y "%ROOT%src-tauri\target\release\tuffclip.exe" "%OUT%\TUFFClip.exe" >nul
 if errorlevel 1 (
-  echo   ERROR: Could not copy Clipr.exe. Is Clipr still running? Quit it from the tray and retry.
+  echo   ERROR: Could not copy TUFFClip.exe. Is TUFFClip still running? Quit it from the tray and retry.
   goto :fail
 )
 echo   OK.
@@ -78,8 +78,8 @@ echo.
 call :elapsed T0 SPENT
 echo.
 echo === Done in %SPENT% ===
-echo Output: "%OUT%\Clipr.exe"
-echo FFmpeg is not part of the build. Clipr offers to download it into its own data
+echo Output: "%OUT%\TUFFClip.exe"
+echo FFmpeg is not part of the build. TUFFClip offers to download it into its own data
 echo folder the first time you open it, so the exe can live anywhere.
 explorer "%OUT%"
 pause

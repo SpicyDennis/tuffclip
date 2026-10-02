@@ -537,24 +537,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "clipr"
-version = "0.8.0"
-dependencies = [
- "anyhow",
- "chrono",
- "cpal",
- "dirs 5.0.1",
- "parking_lot",
- "serde",
- "serde_json",
- "tauri",
- "tauri-build",
- "tauri-plugin-global-shortcut",
- "tauri-plugin-single-instance",
- "windows 0.58.0",
-]
-
-[[package]]
 name = "combine"
 version = "4.6.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4264,6 +4246,24 @@ name = "try-lock"
 version = "0.2.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e421abadd41a4225275504ea4d6566923418b7f05506fbc9c0fe86ba7396114b"
+
+[[package]]
+name = "tuffclip"
+version = "0.9.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "cpal",
+ "dirs 5.0.1",
+ "parking_lot",
+ "serde",
+ "serde_json",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-global-shortcut",
+ "tauri-plugin-single-instance",
+ "windows 0.58.0",
+]
 
 [[package]]
 name = "typeid"

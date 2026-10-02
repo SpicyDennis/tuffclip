@@ -45,13 +45,13 @@ pub fn build(app: &tauri::App) -> tauri::Result<()> {
         ]
     });
 
-    let open = MenuItem::with_id(app, "open", "Open Clipr", true, None::<&str>)?;
+    let open = MenuItem::with_id(app, "open", "Open TUFFClip", true, None::<&str>)?;
     let save = MenuItem::with_id(app, "save", "Save clip now", true, None::<&str>)?;
-    let quit = MenuItem::with_id(app, "quit", "Quit Clipr", true, None::<&str>)?;
+    let quit = MenuItem::with_id(app, "quit", "Quit TUFFClip", true, None::<&str>)?;
     let menu = Menu::with_items(app, &[&open, &save, &quit])?;
     TrayIconBuilder::with_id("main")
         .icon(icons[0].clone())
-        .tooltip("Clipr")
+        .tooltip("TUFFClip")
         .menu(&menu)
         .show_menu_on_left_click(false)
         .on_menu_event(|app, ev| match ev.id.as_ref() {

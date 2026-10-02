@@ -1,5 +1,5 @@
 # Runs a command and prints a "still working" line every 15 s, so a long silent
-# step (the final LTO link of the clipr crate) doesn't look like a hang.
+# step (the final LTO link of the tuffclip crate) doesn't look like a hang.
 # Usage: powershell -File build-heartbeat.ps1 <exe> <args...>
 $exe = $args[0]
 $rest = @($args | Select-Object -Skip 1)

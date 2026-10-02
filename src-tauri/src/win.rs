@@ -1,4 +1,4 @@
-//! Thin wrappers around the Win32 APIs Clipr needs.
+//! Thin wrappers around the Win32 APIs TUFFClip needs.
 use serde::Serialize;
 use std::collections::HashSet;
 use std::sync::OnceLock;
@@ -238,7 +238,7 @@ pub fn list_windows() -> Vec<AppWindow> {
 
     const SKIP: &[&str] = &[
         "explorer.exe", "textinputhost.exe", "applicationframehost.exe",
-        "systemsettings.exe", "msedgewebview2.exe", "clipr.exe", "searchhost.exe",
+        "systemsettings.exe", "msedgewebview2.exe", "tuffclip.exe", "searchhost.exe",
         "shellexperiencehost.exe", "startmenuexperiencehost.exe",
     ];
     let me = std::process::id();
@@ -323,8 +323,8 @@ pub fn window_exists(hwnd: isize) -> bool {
 
 #[derive(Serialize, Default, Clone)]
 pub struct MemInfo {
-    /// Clipr's own core plus ffmpeg (the settings window's webview is not included).
-    pub clipr_bytes: u64,
+    /// TUFFClip's own core plus ffmpeg (the settings window's webview is not included).
+    pub tuffclip_bytes: u64,
     pub system_used: u64,
     pub system_total: u64,
 }
@@ -341,9 +341,9 @@ fn working_set(h: HANDLE) -> u64 {
 pub fn memory_info(ffmpeg: Option<isize>) -> MemInfo {
     let mut m = MemInfo::default();
     unsafe {
-        m.clipr_bytes = working_set(GetCurrentProcess());
+        m.tuffclip_bytes = working_set(GetCurrentProcess());
         if let Some(h) = ffmpeg {
-            m.clipr_bytes += working_set(HANDLE(h as _));
+            m.tuffclip_bytes += working_set(HANDLE(h as _));
         }
         let mut s = MEMORYSTATUSEX::default();
         s.dwLength = std::mem::size_of::<MEMORYSTATUSEX>() as u32;
@@ -370,8 +370,8 @@ pub fn beep_error() {
     }
 }
 
-/// Put a child process in a job object that is killed when Clipr exits —
-/// even if Clipr crashes — so ffmpeg never keeps running orphaned.
+/// Put a child process in a job object that is killed when TUFFClip exits —
+/// even if TUFFClip crashes — so ffmpeg never keeps running orphaned.
 pub fn tie_to_app(child: &std::process::Child) {
     use std::os::windows::io::AsRawHandle;
     static JOB: OnceLock<isize> = OnceLock::new();

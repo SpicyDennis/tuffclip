@@ -1,4 +1,4 @@
-# Link the C runtime statically so Clipr.exe runs on PCs without the
+# Link the C runtime statically so TUFFClip.exe runs on PCs without the
 # Visual C++ Redistributable installed.
 [target.x86_64-pc-windows-msvc]
 rustflags = ["-C", "target-feature=+crt-static"]

@@ -90,7 +90,7 @@ pub struct Config {
     pub hotkey2: String,
     /// How long the last buffer stays saveable after a game closes (0 = discard right away).
     pub hold_minutes: u32,
-    /// Closing the window with X hides Clipr to the tray (off = X quits).
+    /// Closing the window with X hides TUFFClip to the tray (off = X quits).
     pub close_to_tray: bool,
     /// Minimizing the window hides it to the tray.
     pub minimize_to_tray: bool,
@@ -118,7 +118,7 @@ impl Default for Config {
             clips_dir: dirs::video_dir()
                 .or_else(dirs::home_dir)
                 .unwrap_or_else(std::env::temp_dir)
-                .join("Clipr"),
+                .join("TUFFClip"),
             buffer_dir: None,
             ffmpeg: "ffmpeg".into(),
             beep: true,
@@ -149,9 +149,14 @@ pub fn auto_bitrate(w: u32, h: u32, fps: u32, codec: Codec) -> u32 {
 pub static CONFIG_BROKEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 pub fn data_dir() -> PathBuf {
-    dirs::data_local_dir()
-        .unwrap_or_else(std::env::temp_dir)
-        .join("Clipr")
+    let base = dirs::data_local_dir().unwrap_or_else(std::env::temp_dir);
+    let dir = base.join("TUFFClip");
+    // The app used to be called Clipr: carry its settings and ffmpeg over once.
+    let old = base.join("Clipr");
+    if !dir.exists() && old.exists() {
+        let _ = fs::rename(&old, &dir);
+    }
+    dir
 }
 
 fn config_path() -> PathBuf {

@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Clipr",
-  "version": "0.8.0",
-  "identifier": "app.clipr.desktop",
+  "productName": "TUFFClip",
+  "version": "0.9.0",
+  "identifier": "app.tuffclip.desktop",
   "build": {
     "frontendDist": "../ui"
   },

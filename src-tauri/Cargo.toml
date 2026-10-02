@@ -1,6 +1,6 @@
 [package]
-name = "clipr"
-version = "0.8.0"
+name = "tuffclip"
+version = "0.9.0"
 description = "Lightweight game & desktop clipper"
 edition = "2021"
 

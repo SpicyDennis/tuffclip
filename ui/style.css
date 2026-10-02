@@ -1,4 +1,4 @@
-/* Clipr-specific rules. The shared look lives in theme.css (don't edit it per app). */
+/* TUFFClip-specific rules. The shared look lives in theme.css (don't edit it per app). */
 
 /* ---------------------------------------------------------------- top bar extras */
 .topright { margin-left: auto; display: flex; align-items: center; gap: 20px; min-width: 0; }
@@ -153,3 +153,6 @@
 .tabs { margin-left: -8px; touch-action: none; user-select: none; }
 .tabs .tab, .tabs .menu-btn { cursor: grab; }
 .tabs .dragging { background: var(--raised); color: var(--text); cursor: grabbing; }
+
+/* brand logo (replaces the shared amber ring mark) */
+.brand-logo { width: 22px; height: 22px; display: block; }

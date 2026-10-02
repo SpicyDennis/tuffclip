@@ -5,7 +5,7 @@
 //!     -> optional scale_d3d11 (GPU)
 //!     -> NVENC / AMF / QSV hardware encoder
 //!     -> either 2-second MPEG-TS segments in a small rotating ring on disk,
-//!        or an MPEG-TS stream on stdout that Clipr keeps in a RAM ring.
+//!        or an MPEG-TS stream on stdout that TUFFClip keeps in a RAM ring.
 //! No frame is ever copied to system memory, which is why the in-game cost is
 //! about the same as ShadowPlay / SteelSeries Moments.
 //!
