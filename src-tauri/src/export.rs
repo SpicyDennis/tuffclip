@@ -1,12 +1,12 @@
 //! Trim + export. Paths:
-//!  * original (mp4/mkv/mov) -> stream copy (instant, original quality, cuts snap to keyframes)
-//!  * size / bitrate         -> GPU encode at a computed bitrate (fast); size mode re-tries once if over
-//!  * exact size             -> libx264 two-pass (slowest, lands closest to the target size)
-//!  * WebM                   -> always re-encoded with VP9 + Opus (WebM can't hold H.264/AAC)
+//!  * original, same codec (.mp4/.mkv/.mov) -> stream copy (instant, original quality, cuts snap to keyframes)
+//!  * original, other codec                 -> GPU re-encode at a quality-matched bitrate, audio copied
+//!  * size / bitrate                        -> GPU encode at a computed bitrate (fast); size mode re-tries once if over
+//!  * exact size                            -> CPU two-pass (x264 or x265), slowest, lands closest to the target size
+//!  * .webm                                 -> always re-encoded with VP9 + Opus (.webm can't hold H.264/AAC)
 //!
-//! Exports never need to be fast, so they run at idle priority, with few threads, and, while a game
-//! is being recorded, read their input slower than real time-ish. A long clip just takes longer.
-use crate::config::{Config, Encoder, ExportFormat};
+//! Exports never need to be fast, so they run at idle priority with a few threads. A long clip just takes longer.
+use crate::config::{Config, Encoder};
 use crate::engine::sanitize_name;
 use crate::{ff, library};
 use anyhow::{bail, Context, Result};
@@ -15,6 +15,40 @@ use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum ExportFormat {
+    #[default]
+    Mp4,
+    Mkv,
+    Mov,
+    Webm,
+}
+
+impl ExportFormat {
+    pub fn ext(self) -> &'static str {
+        match self {
+            ExportFormat::Mp4 => "mp4",
+            ExportFormat::Mkv => "mkv",
+            ExportFormat::Mov => "mov",
+            ExportFormat::Webm => "webm",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum ExportCodec {
+    /// Whatever the clip already is (stream copy when nothing else changes).
+    #[default]
+    Keep,
+    H264,
+    Hevc,
+}
+
+/// HEVC needs roughly this share of H.264's bitrate for the same picture quality.
+pub const HEVC_RATIO: f64 = 0.65;
+
 #[derive(Debug, Deserialize)]
 pub struct ExportRequest {
     pub path: String,
@@ -22,6 +56,10 @@ pub struct ExportRequest {
     pub end: f64,
     /// "original", "size" or "bitrate".
     pub mode: String,
+    #[serde(default)]
+    pub format: ExportFormat,
+    #[serde(default)]
+    pub codec: ExportCodec,
     /// Used when mode == "size".
     #[serde(default)]
     pub target_mb: f64,
@@ -75,7 +113,8 @@ pub fn clean_stem(name: &str, ext: &str) -> String {
     if s == "Unknown" && n.trim().is_empty() { String::new() } else { s.chars().take(120).collect() }
 }
 
-pub fn export(cfg: &Config, req: &ExportRequest, busy: bool, progress: impl Fn(f64)) -> Result<PathBuf> {
+/// `progress` gets (fraction done, speed as a multiple of real time; 0 = unknown).
+pub fn export(cfg: &Config, req: &ExportRequest, progress: impl Fn(f64, f64)) -> Result<PathBuf> {
     let input = PathBuf::from(&req.path);
     if !input.is_file() {
         bail!("Clip not found: {}", req.path);
@@ -85,10 +124,9 @@ pub fn export(cfg: &Config, req: &ExportRequest, busy: bool, progress: impl Fn(f
         bail!("The selection is too short to export");
     }
 
-    let fmt = cfg.export_format;
+    let fmt = req.format;
     let ext = fmt.ext();
     let webm = fmt == ExportFormat::Webm;
-    let gentle = busy && cfg.export_gentle;
 
     let game = sanitize_name(&library::game_of(&input));
     let src_stem = input.file_stem().unwrap_or_default().to_string_lossy().into_owned();
@@ -97,6 +135,15 @@ pub fn export(cfg: &Config, req: &ExportRequest, busy: bool, progress: impl Fn(f
     let size_mode = req.mode == "size" && req.target_mb > 0.0;
     let rate_mode = req.mode == "bitrate" && req.target_kbps > 0;
     let known_src = req.src_kbps > 0.0;
+    let src_codec = ff::probe_codec(&cfg.ffmpeg, &input);
+    let hevc = match req.codec {
+        ExportCodec::Hevc => true,
+        ExportCodec::H264 => false,
+        // "same as clip" can't re-encode on its own; in size/bitrate mode it means H.264
+        ExportCodec::Keep => false,
+    };
+    // Original quality but a different codec: a quality-matched GPU re-encode (audio is copied).
+    let recode = !size_mode && !rate_mode && !webm && req.codec != ExportCodec::Keep && (if hevc { "hevc" } else { "h264" }) != src_codec;
 
     if size_mode && known_src {
         let native_mb = req.src_kbps * 1000.0 / 8.0 * dur / 1e6;
@@ -114,6 +161,8 @@ pub fn export(cfg: &Config, req: &ExportRequest, busy: bool, progress: impl Fn(f
     } else if rate_mode {
         let m = req.target_kbps as f64 / 1000.0;
         if m.fract() == 0.0 { format!("{m:.0}Mbps") } else { format!("{m:.1}Mbps") }
+    } else if recode {
+        (if hevc { "hevc" } else { "h264" }).into()
     } else {
         "trim".into()
     };
@@ -127,7 +176,7 @@ pub fn export(cfg: &Config, req: &ExportRequest, busy: bool, progress: impl Fn(f
     let faststart = matches!(fmt, ExportFormat::Mp4 | ExportFormat::Mov);
 
     // ---- no re-encode
-    if !size_mode && !rate_mode && !webm {
+    if !size_mode && !rate_mode && !webm && !recode {
         let mut c = ff::cmd(&cfg.ffmpeg);
         c.args(["-hide_banner", "-loglevel", "error", "-y", "-ss", &ss, "-i"])
             .arg(&input)
@@ -147,6 +196,11 @@ pub fn export(cfg: &Config, req: &ExportRequest, busy: bool, progress: impl Fn(f
         (((total_kbps - a as f64).max(150.0)) as u32, a)
     } else if rate_mode {
         (req.target_kbps, audio_tier(req.target_kbps as f64 + 128.0))
+    } else if recode {
+        // Same look in the other codec: scale the clip's own video bitrate.
+        let ratio = if hevc { HEVC_RATIO } else { 1.0 / HEVC_RATIO };
+        let v = if known_src { (req.src_kbps - 128.0).max(500.0) * ratio } else { 8000.0 };
+        (v.max(500.0) as u32, 128)
     } else {
         // WebM "original": keep roughly the clip's own quality.
         let total = if known_src { req.src_kbps * 0.85 } else { 8000.0 };
@@ -159,19 +213,19 @@ pub fn export(cfg: &Config, req: &ExportRequest, busy: bool, progress: impl Fn(f
     };
     let vf = (height > 0).then(|| format!("scale=-2:'min({height},ih)'"));
     let ab = format!("{audio_kbps}k");
-    let (acodec, vcodec_cpu) = if webm { ("libopus", "libvpx-vp9") } else { ("aac", "libx264") };
-
-    let cores = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
-    let threads = if gentle { (cores / 4).max(1) } else { (cores / 2).max(2) }.to_string();
-    let rate = |cpu: bool| -> Option<&'static str> {
-        gentle.then_some(if cpu { "2" } else { "4" })
+    let (acodec, vcodec_cpu) = if webm {
+        ("libopus", "libvpx-vp9")
+    } else if hevc {
+        ("aac", "libx265")
+    } else {
+        ("aac", "libx264")
     };
 
-    let base = |c: &mut Command, cpu: bool| {
+    let cores = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
+    let threads = (cores / 2).max(2).to_string();
+
+    let base = |c: &mut Command| {
         c.args(["-hide_banner", "-loglevel", "error", "-y", "-ss", &ss]);
-        if let Some(r) = rate(cpu) {
-            c.args(["-readrate", r]);
-        }
         c.arg("-i").arg(&input).args(["-t", &t]);
         if let Some(vf) = &vf {
             c.args(["-vf", vf]);
@@ -180,21 +234,21 @@ pub fn export(cfg: &Config, req: &ExportRequest, busy: bool, progress: impl Fn(f
     };
     let vp9_flags = ["-deadline", "good", "-cpu-used", "4", "-row-mt", "1", "-tile-columns", "2", "-pix_fmt", "yuv420p"];
 
-    // ---- WebM: VP9 + Opus on the CPU, throttled
+    // ---- .webm: VP9 + Opus on the CPU
     if webm {
         let vb = format!("{video_kbps}k");
         if req.precise {
             let log = std::env::temp_dir().join(format!("clipr_2pass_{}", std::process::id()));
             let logs = log.to_string_lossy().into_owned();
             let mut p1 = ff::cmd_low(&cfg.ffmpeg);
-            base(&mut p1, true);
+            base(&mut p1);
             p1.args(["-map", "0:v:0", "-c:v", vcodec_cpu, "-b:v", &vb, "-threads", &threads])
                 .args(vp9_flags)
                 .args(["-pass", "1", "-passlogfile", &logs, "-an", "-f", "null", "NUL"]);
             let r1 = run_progress(p1, dur, 0.0, 0.5, &progress);
             let r = r1.and_then(|_| {
                 let mut p2 = ff::cmd_low(&cfg.ffmpeg);
-                base(&mut p2, true);
+                base(&mut p2);
                 p2.args(["-map", "0:v:0", "-map", "0:a?", "-c:v", vcodec_cpu, "-b:v", &vb, "-threads", &threads])
                     .args(vp9_flags)
                     .args(["-pass", "2", "-passlogfile", &logs, "-c:a", acodec, "-b:a", &ab])
@@ -205,7 +259,7 @@ pub fn export(cfg: &Config, req: &ExportRequest, busy: bool, progress: impl Fn(f
             r?;
         } else {
             let mut c = ff::cmd_low(&cfg.ffmpeg);
-            base(&mut c, true);
+            base(&mut c);
             c.args(["-map", "0:v:0", "-map", "0:a?", "-c:v", vcodec_cpu, "-b:v", &vb, "-threads", &threads])
                 .args(vp9_flags)
                 .args(["-c:a", acodec, "-b:a", &ab])
@@ -215,27 +269,44 @@ pub fn export(cfg: &Config, req: &ExportRequest, busy: bool, progress: impl Fn(f
         return Ok(out);
     }
 
-    let mov_flags: &[&str] = if faststart { &["-movflags", "+faststart"] } else { &[] };
+    let mut mov_flags: Vec<&str> = if faststart { vec!["-movflags", "+faststart"] } else { vec![] };
+    if hevc && faststart {
+        // Players and editors only recognise HEVC in .mp4/.mov with this tag.
+        mov_flags.extend(["-tag:v", "hvc1"]);
+    }
 
-    // ---- exact size: x264 two-pass
+    // ---- exact size: CPU two-pass
     if req.precise {
-        let log = std::env::temp_dir().join(format!("clipr_2pass_{}", std::process::id()));
+        let name = format!("clipr_2pass_{}", std::process::id());
+        let log = std::env::temp_dir().join(&name);
         let logs = log.to_string_lossy().into_owned();
         let vb = format!("{video_kbps}k");
+        let tmp = std::env::temp_dir();
+        // x265 takes its pass settings through -x265-params (relative stats file: a drive letter's colon would break the list).
+        let pass_args = |n: u8| -> Vec<String> {
+            if hevc {
+                vec!["-x265-params".into(), format!("pass={n}:stats={name}.x265:log-level=error")]
+            } else {
+                vec!["-pass".into(), n.to_string(), "-passlogfile".into(), logs.clone()]
+            }
+        };
 
         let mut p1 = ff::cmd_low(&cfg.ffmpeg);
-        base(&mut p1, true);
-        p1.args(["-map", "0:v:0", "-c:v", vcodec_cpu, "-preset", "medium", "-threads", &threads, "-b:v", &vb,
-                 "-pass", "1", "-passlogfile", &logs, "-an", "-f", "null", "NUL"]);
+        p1.current_dir(&tmp);
+        base(&mut p1);
+        p1.args(["-map", "0:v:0", "-c:v", vcodec_cpu, "-preset", "medium", "-threads", &threads, "-b:v", &vb])
+            .args(pass_args(1))
+            .args(["-an", "-f", "null", "NUL"]);
         let r1 = run_progress(p1, dur, 0.0, 0.5, &progress);
 
         let r = r1.and_then(|_| {
             let mut p2 = ff::cmd_low(&cfg.ffmpeg);
-            base(&mut p2, true);
-            p2.args(["-map", "0:v:0", "-map", "0:a?", "-c:v", vcodec_cpu, "-preset", "medium", "-threads", &threads,
-                     "-b:v", &vb, "-pass", "2", "-passlogfile", &logs, "-pix_fmt", "yuv420p",
-                     "-c:a", acodec, "-b:a", &ab])
-                .args(mov_flags)
+            p2.current_dir(&tmp);
+            base(&mut p2);
+            p2.args(["-map", "0:v:0", "-map", "0:a?", "-c:v", vcodec_cpu, "-preset", "medium", "-threads", &threads, "-b:v", &vb])
+                .args(pass_args(2))
+                .args(["-pix_fmt", "yuv420p", "-c:a", acodec, "-b:a", &ab])
+                .args(&mov_flags)
                 .arg(&out);
             run_progress(p2, dur, 0.5, 0.5, &progress)
         });
@@ -245,27 +316,31 @@ pub fn export(cfg: &Config, req: &ExportRequest, busy: bool, progress: impl Fn(f
     }
 
     // ---- GPU single pass; in size mode, if it overshoots, redo once with a scaled-down bitrate.
+    let family = if hevc { "hevc" } else { "h264" };
     let enc = match cfg.encoder {
-        Encoder::Nvenc => "h264_nvenc",
-        Encoder::Amf => "h264_amf",
-        Encoder::Qsv => "h264_qsv",
+        Encoder::Nvenc => format!("{family}_nvenc"),
+        Encoder::Amf => format!("{family}_amf"),
+        Encoder::Qsv => format!("{family}_qsv"),
     };
     let target_bytes = req.target_mb * 1_000_000.0;
     for attempt in 0..2 {
         let vb = format!("{video_kbps}k");
         let mut c = ff::cmd_low(&cfg.ffmpeg);
-        base(&mut c, false);
-        c.args(["-map", "0:v:0", "-map", "0:a?", "-c:v", enc]);
+        base(&mut c);
+        c.args(["-map", "0:v:0", "-map", "0:a?", "-c:v", &enc]);
         match cfg.encoder {
             // p5 instead of p6: nearly the same quality for a fraction of the GPU time.
             Encoder::Nvenc => c.args(["-preset", "p5", "-rc", "cbr", "-multipass", "qres"]),
             Encoder::Amf => c.args(["-quality", "balanced", "-rc", "cbr"]),
             Encoder::Qsv => c.args(["-preset", "medium"]),
         };
-        c.args(["-b:v", &vb, "-maxrate", &vb, "-bufsize", &vb, "-pix_fmt", "nv12",
-                "-c:a", acodec, "-b:a", &ab])
-            .args(mov_flags)
-            .arg(&out);
+        c.args(["-b:v", &vb, "-maxrate", &vb, "-bufsize", &vb, "-pix_fmt", "nv12"]);
+        if recode {
+            c.args(["-c:a", "copy"]);
+        } else {
+            c.args(["-c:a", acodec, "-b:a", &ab]);
+        }
+        c.args(&mov_flags).arg(&out);
         run_progress(c, dur, 0.0, 1.0, &progress)?;
 
         if !size_mode {
@@ -292,7 +367,7 @@ fn cleanup_passlogs(prefix: &Path) {
     }
 }
 
-fn run_progress(mut c: Command, dur: f64, base: f64, span: f64, progress: &impl Fn(f64)) -> Result<()> {
+fn run_progress(mut c: Command, dur: f64, base: f64, span: f64, progress: &impl Fn(f64, f64)) -> Result<()> {
     let mut child = c
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -306,12 +381,20 @@ fn run_progress(mut c: Command, dur: f64, base: f64, span: f64, progress: &impl 
         s
     });
     let stdout = BufReader::new(child.stdout.take().unwrap());
+    let mut speed = 0.0;
     for line in stdout.lines().map_while(|l| l.ok()) {
+        if let Some(v) = line.strip_prefix("speed=") {
+            // "speed=2.31x", or "N/A" before the first frames
+            if let Ok(s) = v.trim().trim_end_matches('x').trim().parse::<f64>() {
+                speed = s;
+            }
+            continue;
+        }
         let v = line
             .strip_prefix("out_time_us=")
             .or_else(|| line.strip_prefix("out_time_ms=")); // also microseconds, despite the name
         if let Some(us) = v.and_then(|v| v.trim().parse::<f64>().ok()) {
-            progress(base + span * (us / 1e6 / dur).clamp(0.0, 1.0));
+            progress(base + span * (us / 1e6 / dur).clamp(0.0, 1.0), speed);
         }
     }
     let status = child.wait()?;
@@ -319,6 +402,6 @@ fn run_progress(mut c: Command, dur: f64, base: f64, span: f64, progress: &impl 
     if !status.success() {
         bail!("Export failed: {}", ff::tail(&errs));
     }
-    progress(base + span);
+    progress(base + span, speed);
     Ok(())
 }

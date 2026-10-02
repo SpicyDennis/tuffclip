@@ -15,13 +15,16 @@ use windows::Win32::System::JobObjects::{
     SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
     JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
 };
+use windows::Win32::System::ProcessStatus::{GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS};
+use windows::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
 use windows::Win32::System::Threading::{
-    GetExitCodeProcess, OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32,
+    GetCurrentProcess, GetExitCodeProcess, OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32,
     PROCESS_QUERY_LIMITED_INFORMATION,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    EnumWindows, GetClientRect, GetForegroundWindow, GetWindowTextLengthW, GetWindowTextW,
-    GetWindowThreadProcessId, IsIconic, IsWindow, IsWindowVisible, MB_ICONHAND, MB_OK,
+    EnumWindows, GetClientRect, GetForegroundWindow, GetWindowLongW, GetWindowTextLengthW, GetWindowTextW,
+    GetWindowThreadProcessId, IsIconic, IsWindow, IsWindowVisible, GWL_EXSTYLE, MB_ICONHAND, MB_OK,
+    WS_EX_TOOLWINDOW,
 };
 
 fn wide_to_string(buf: &[u16]) -> String {
@@ -254,6 +257,102 @@ pub fn list_windows() -> Vec<AppWindow> {
     }
     out.sort_by(|a, b| a.exe.to_lowercase().cmp(&b.exe.to_lowercase()));
     out
+}
+
+/// One running window that belongs to a game from the user's list.
+#[derive(Clone, Debug)]
+pub struct RunWin {
+    pub pid: u32,
+    pub exe: String,
+    pub hwnd: isize,
+}
+
+/// For each of the given executables (lowercase) that has a visible window, its largest window.
+/// Used to find which listed games are running right now, focused or not.
+pub fn running_games(exes: &HashSet<String>) -> Vec<RunWin> {
+    struct Ctx {
+        wins: Vec<(u32, isize, u64)>,
+    }
+    unsafe extern "system" fn cb(hwnd: HWND, lp: LPARAM) -> BOOL {
+        let ctx = &mut *(lp.0 as *mut Ctx);
+        if IsWindowVisible(hwnd).as_bool() && GetWindowTextLengthW(hwnd) > 0 {
+            let ex = GetWindowLongW(hwnd, GWL_EXSTYLE) as u32;
+            if ex & WS_EX_TOOLWINDOW.0 == 0 {
+                let mut pid = 0u32;
+                GetWindowThreadProcessId(hwnd, Some(&mut pid));
+                let mut rc = RECT::default();
+                let _ = GetClientRect(hwnd, &mut rc);
+                let area = ((rc.right - rc.left).max(0) as u64) * ((rc.bottom - rc.top).max(0) as u64);
+                ctx.wins.push((pid, hwnd.0 as isize, area));
+            }
+        }
+        TRUE
+    }
+    let mut ctx = Ctx { wins: Vec::new() };
+    unsafe {
+        let _ = EnumWindows(Some(cb), LPARAM(&mut ctx as *mut _ as isize));
+    }
+    let mut names: std::collections::HashMap<u32, Option<String>> = Default::default();
+    let mut best: std::collections::HashMap<u32, (isize, u64, String)> = Default::default();
+    for (pid, hwnd, area) in ctx.wins {
+        if pid == 0 {
+            continue;
+        }
+        let exe = names.entry(pid).or_insert_with(|| exe_name(pid)).clone();
+        let Some(exe) = exe else { continue };
+        if !exes.contains(&exe.to_lowercase()) {
+            continue;
+        }
+        let e = best.entry(pid).or_insert((hwnd, area, exe));
+        if area > e.1 {
+            e.0 = hwnd;
+            e.1 = area;
+        }
+    }
+    let mut out: Vec<RunWin> = best.into_iter().map(|(pid, (hwnd, _, exe))| RunWin { pid, exe, hwnd }).collect();
+    out.sort_by_key(|w| w.pid);
+    out
+}
+
+/// Whether `hwnd` still exists.
+pub fn window_exists(hwnd: isize) -> bool {
+    unsafe { IsWindow(HWND(hwnd as _)).as_bool() }
+}
+
+// ---------------------------------------------------------------- memory
+
+#[derive(Serialize, Default, Clone)]
+pub struct MemInfo {
+    /// Clipr's own core plus ffmpeg (the settings window's webview is not included).
+    pub clipr_bytes: u64,
+    pub system_used: u64,
+    pub system_total: u64,
+}
+
+fn working_set(h: HANDLE) -> u64 {
+    unsafe {
+        let mut c = PROCESS_MEMORY_COUNTERS::default();
+        c.cb = std::mem::size_of::<PROCESS_MEMORY_COUNTERS>() as u32;
+        if GetProcessMemoryInfo(h, &mut c, c.cb).is_ok() { c.WorkingSetSize as u64 } else { 0 }
+    }
+}
+
+/// `ffmpeg` is the raw handle of the recorder's child process, if one is running.
+pub fn memory_info(ffmpeg: Option<isize>) -> MemInfo {
+    let mut m = MemInfo::default();
+    unsafe {
+        m.clipr_bytes = working_set(GetCurrentProcess());
+        if let Some(h) = ffmpeg {
+            m.clipr_bytes += working_set(HANDLE(h as _));
+        }
+        let mut s = MEMORYSTATUSEX::default();
+        s.dwLength = std::mem::size_of::<MEMORYSTATUSEX>() as u32;
+        if GlobalMemoryStatusEx(&mut s).is_ok() {
+            m.system_total = s.ullTotalPhys;
+            m.system_used = s.ullTotalPhys.saturating_sub(s.ullAvailPhys);
+        }
+    }
+    m
 }
 
 // ------------------------------------------------------------------ misc

@@ -35,24 +35,12 @@ pub enum BitrateUnit {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
-pub enum ExportFormat {
-    Mp4,
-    Mkv,
-    Mov,
-    Webm,
+pub enum CaptureMethod {
+    /// Record only the game's own window, so nothing in front of it shows up.
+    Window,
+    /// Record the whole monitor (cropped to the game's window if it isn't fullscreen).
+    Display,
 }
-
-impl ExportFormat {
-    pub fn ext(self) -> &'static str {
-        match self {
-            ExportFormat::Mp4 => "mp4",
-            ExportFormat::Mkv => "mkv",
-            ExportFormat::Mov => "mov",
-            ExportFormat::Webm => "webm",
-        }
-    }
-}
-
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct GameEntry {
     pub exe: String,
@@ -93,9 +81,18 @@ pub struct Config {
     /// Keep the rolling buffer in memory instead of on disk.
     pub buffer_in_ram: bool,
     pub bitrate_unit: BitrateUnit,
-    pub export_format: ExportFormat,
-    /// Throttle exports while a game is being recorded so they never cost frames.
-    pub export_gentle: bool,
+    /// Save raw clips at low priority so the save itself never costs a game frames.
+    #[serde(alias = "export_gentle")]
+    pub gentle_save: bool,
+    /// Optional second shortcut for saving a clip (empty = none).
+    pub hotkey2: String,
+    /// How long the last buffer stays saveable after a game closes (0 = discard right away).
+    pub hold_minutes: u32,
+    /// Closing the window with X hides Clipr to the tray (off = X quits).
+    pub close_to_tray: bool,
+    /// Minimizing the window hides it to the tray.
+    pub minimize_to_tray: bool,
+    pub capture_method: CaptureMethod,
 }
 
 impl Default for Config {
@@ -125,8 +122,12 @@ impl Default for Config {
             start_hidden: false,
             buffer_in_ram: false,
             bitrate_unit: BitrateUnit::Mbps,
-            export_format: ExportFormat::Mp4,
-            export_gentle: true,
+            gentle_save: true,
+            hotkey2: String::new(),
+            hold_minutes: 5,
+            close_to_tray: true,
+            minimize_to_tray: false,
+            capture_method: CaptureMethod::Window,
         }
     }
 }
@@ -172,6 +173,8 @@ impl Config {
         self.bitrate_kbps = self.bitrate_kbps.clamp(2_000, 150_000);
         self.audio_kbps = self.audio_kbps.clamp(64, 320);
         self.audio_offset_ms = self.audio_offset_ms.clamp(-2_000, 2_000);
+        self.hold_minutes = self.hold_minutes.min(60);
+        self.hotkey2 = self.hotkey2.trim().to_string();
         if self.ffmpeg.trim().is_empty() {
             self.ffmpeg = "ffmpeg".into();
         }

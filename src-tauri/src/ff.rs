@@ -68,6 +68,19 @@ pub fn info(ffmpeg: &str) -> FfInfo {
     }
 }
 
+/// The video codec of a clip ("h264", "hevc", "vp9", ...), or "" if it can't be read.
+pub fn probe_codec(ffmpeg: &str, file: &std::path::Path) -> String {
+    let Ok(out) = cmd(ffmpeg).args(["-hide_banner", "-i"]).arg(file).stdin(Stdio::null()).output() else {
+        return String::new();
+    };
+    let text = String::from_utf8_lossy(&out.stderr);
+    text.lines()
+        .find_map(|l| l.split_once("Video: ").map(|(_, r)| r))
+        .and_then(|r| r.split(|c: char| c == ' ' || c == ',' || c == '(').next())
+        .unwrap_or("")
+        .to_lowercase()
+}
+
 const FFMPEG_URL: &str =
     "https://github.com/BtbN/FFmpeg-Builds/releases/latest/download/ffmpeg-master-latest-win64-gpl.zip";
 

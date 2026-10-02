@@ -7,15 +7,14 @@ mod export;
 mod ff;
 mod library;
 mod recorder;
+mod tray;
 mod win;
 
 use config::Config;
 use engine::{Engine, Status};
 use std::os::windows::process::CommandExt;
 use std::sync::Arc;
-use tauri::menu::{Menu, MenuItem};
-use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
-use tauri::{AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder};
+use tauri::{AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder, WindowEvent};
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
 
 type Eng<'a> = State<'a, Arc<Engine>>;
@@ -33,11 +32,14 @@ fn get_config(eng: Eng<'_>) -> Config {
 
 fn apply_config(app: &AppHandle, eng: &Engine, mut cfg: Config) -> Result<(), String> {
     cfg.sanitize();
+    if !cfg.hotkey2.is_empty() && cfg.hotkey2.eq_ignore_ascii_case(&cfg.hotkey) {
+        return Err("Both shortcuts are the same. Pick a different one for the second.".into());
+    }
     let old = eng.cfg.lock().clone();
-    if old.hotkey != cfg.hotkey {
-        if let Err(e) = set_hotkey(app, &cfg.hotkey) {
-            let _ = set_hotkey(app, &old.hotkey);
-            return Err(format!("Couldn't use \"{}\" as a hotkey ({e}). Another app may own it.", cfg.hotkey));
+    if old.hotkey != cfg.hotkey || old.hotkey2 != cfg.hotkey2 {
+        if let Err(e) = set_hotkeys(app, &cfg.hotkey, &cfg.hotkey2) {
+            let _ = set_hotkeys(app, &old.hotkey, &old.hotkey2);
+            return Err(e);
         }
         eng.set_hotkey_error(None);
     }
@@ -130,11 +132,12 @@ fn open_data_folder() -> Result<(), String> {
     std::process::Command::new("explorer").arg(dir).spawn().map(|_| ()).map_err(e2s)
 }
 
+/// Close the window (not the app). `destroy`, not `close`, so the "X quits" setting isn't triggered.
 #[tauri::command]
 fn hide_window(app: AppHandle) {
     if let Some(w) = app.get_webview_window("main") {
         std::thread::spawn(move || {
-            let _ = w.close();
+            let _ = w.destroy();
         });
     }
 }
@@ -161,6 +164,7 @@ fn rename_clip(eng: Eng<'_>, path: String, name: String) -> Result<String, Strin
     }
     if new != old {
         std::fs::rename(&old, &new).map_err(e2s)?;
+        library::rename_raw(&path, &new.to_string_lossy());
     }
     Ok(new.to_string_lossy().into_owned())
 }
@@ -168,6 +172,12 @@ fn rename_clip(eng: Eng<'_>, path: String, name: String) -> Result<String, Strin
 #[tauri::command]
 fn get_status(eng: Eng<'_>) -> Status {
     eng.status()
+}
+
+/// Record a different running game than the automatic pick (None = automatic again).
+#[tauri::command]
+fn set_target(eng: Eng<'_>, exe: Option<String>) {
+    eng.set_target(exe.filter(|e| !e.is_empty()));
 }
 
 #[tauri::command]
@@ -183,8 +193,11 @@ fn list_windows() -> Vec<win::AppWindow> {
 #[tauri::command]
 fn list_clips(eng: Eng<'_>, kind: String) -> Vec<library::Clip> {
     let cfg = eng.cfg.lock().clone();
-    let root = if kind == "exports" { cfg.exports_dir() } else { cfg.raw_dir() };
-    library::list(&root)
+    if kind == "exports" {
+        library::list(&cfg.exports_dir(), false)
+    } else {
+        library::list(&cfg.raw_dir(), true)
+    }
 }
 
 fn inside_clips_dir(eng: &Engine, path: &str) -> Result<std::path::PathBuf, String> {
@@ -196,7 +209,9 @@ fn inside_clips_dir(eng: &Engine, path: &str) -> Result<std::path::PathBuf, Stri
 #[tauri::command]
 fn delete_clip(eng: Eng<'_>, path: String) -> Result<(), String> {
     let p = inside_clips_dir(&eng, &path)?;
-    std::fs::remove_file(p).map_err(e2s)
+    std::fs::remove_file(p).map_err(e2s)?;
+    library::forget_raw(&path);
+    Ok(())
 }
 
 #[tauri::command]
@@ -208,12 +223,55 @@ fn reveal_clip(path: String) -> Result<(), String> {
         .map_err(e2s)
 }
 
+/// kind: "raw", "exports", or anything else for the whole clips folder.
 #[tauri::command]
 fn open_clips_folder(eng: Eng<'_>, kind: String) -> Result<(), String> {
     let cfg = eng.cfg.lock().clone();
-    let dir = if kind == "exports" { cfg.exports_dir() } else { cfg.raw_dir() };
+    let dir = match kind.as_str() {
+        "exports" => cfg.exports_dir(),
+        "raw" => cfg.raw_dir(),
+        _ => cfg.clips_dir.clone(),
+    };
     std::fs::create_dir_all(&dir).map_err(e2s)?;
     std::process::Command::new("explorer").arg(dir).spawn().map(|_| ()).map_err(e2s)
+}
+
+#[tauri::command]
+async fn storage_info(eng: Eng<'_>) -> Result<library::Storage, String> {
+    let cfg = eng.cfg.lock().clone();
+    tauri::async_runtime::spawn_blocking(move || library::storage(&cfg)).await.map_err(e2s)
+}
+
+#[derive(serde::Serialize)]
+struct Deleted {
+    count: u32,
+    bytes: u64,
+}
+
+/// Delete every raw clip that already has a trimmed export.
+#[tauri::command]
+async fn delete_exported_raws(eng: Eng<'_>) -> Result<Deleted, String> {
+    let cfg = eng.cfg.lock().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let (count, bytes) = library::delete_exported_raws(&cfg);
+        Deleted { count, bytes }
+    })
+    .await
+    .map_err(e2s)
+}
+
+#[tauri::command]
+fn memory_info(eng: Eng<'_>) -> win::MemInfo {
+    eng.memory()
+}
+
+/// The clip's video codec ("h264", "hevc", ...), for size estimates.
+#[tauri::command]
+async fn probe_clip(eng: Eng<'_>, path: String) -> Result<String, String> {
+    let ffmpeg = eng.cfg.lock().ffmpeg.clone();
+    tauri::async_runtime::spawn_blocking(move || ff::probe_codec(&ffmpeg, std::path::Path::new(&path)))
+        .await
+        .map_err(e2s)
 }
 
 #[tauri::command]
@@ -229,13 +287,13 @@ async fn save_clip_now(eng: Eng<'_>) -> Result<String, String> {
 #[tauri::command]
 async fn export_clip(app: AppHandle, eng: Eng<'_>, req: export::ExportRequest) -> Result<String, String> {
     let cfg = eng.cfg.lock().clone();
-    let busy = eng.status().recording;
     tauri::async_runtime::spawn_blocking(move || {
         let path = req.path.clone();
-        export::export(&cfg, &req, busy, |pct| {
-            let _ = app.emit("export-progress", serde_json::json!({ "path": path, "pct": pct }));
-        })
-        .map(|p| p.to_string_lossy().into_owned())
+        let out = export::export(&cfg, &req, |pct, speed| {
+            let _ = app.emit("export-progress", serde_json::json!({ "path": path, "pct": pct, "speed": speed }));
+        })?;
+        library::record_export(&req.path, &out);
+        Ok::<_, anyhow::Error>(out.to_string_lossy().into_owned())
     })
     .await
     .map_err(e2s)?
@@ -270,13 +328,20 @@ async fn download_ffmpeg(app: AppHandle, eng: Eng<'_>) -> Result<String, String>
 
 // ------------------------------------------------------------------- helpers
 
-fn set_hotkey(app: &AppHandle, hk: &str) -> Result<(), String> {
+/// Replace all registered shortcuts with these (an empty second one is skipped).
+fn set_hotkeys(app: &AppHandle, a: &str, b: &str) -> Result<(), String> {
     let gs = app.global_shortcut();
     gs.unregister_all().map_err(e2s)?;
-    gs.register(hk).map_err(e2s)
+    gs.register(a)
+        .map_err(|e| format!("Couldn't use \"{a}\" as a shortcut ({e}). Another app may own it."))?;
+    if !b.is_empty() {
+        gs.register(b)
+            .map_err(|e| format!("Couldn't use \"{b}\" as a shortcut ({e}). Another app may own it."))?;
+    }
+    Ok(())
 }
 
-fn save_in_background(app: &AppHandle) {
+pub(crate) fn save_in_background(app: &AppHandle) {
     let eng = app.state::<Arc<Engine>>().inner().clone();
     std::thread::spawn(move || {
         let _ = eng.save_clip();
@@ -285,7 +350,7 @@ fn save_in_background(app: &AppHandle) {
 
 /// The window is created on demand and destroyed on close, so while you game
 /// there is no webview in memory at all — just the tiny Rust core + ffmpeg.
-fn show_main(app: &AppHandle) {
+pub(crate) fn show_main(app: &AppHandle) {
     if let Some(w) = app.get_webview_window("main") {
         let _ = w.unminimize();
         let _ = w.show();
@@ -303,40 +368,16 @@ fn show_main(app: &AppHandle) {
     });
 }
 
-fn build_tray(app: &tauri::App) -> tauri::Result<()> {
-    let open = MenuItem::with_id(app, "open", "Open Clipr", true, None::<&str>)?;
-    let save = MenuItem::with_id(app, "save", "Save clip now", true, None::<&str>)?;
-    let quit = MenuItem::with_id(app, "quit", "Quit Clipr", true, None::<&str>)?;
-    let menu = Menu::with_items(app, &[&open, &save, &quit])?;
-    TrayIconBuilder::with_id("main")
-        .icon(app.default_window_icon().unwrap().clone())
-        .tooltip("Clipr")
-        .menu(&menu)
-        .show_menu_on_left_click(false)
-        .on_menu_event(|app, ev| match ev.id.as_ref() {
-            "open" => show_main(app),
-            "save" => save_in_background(app),
-            "quit" => app.exit(0),
-            _ => {}
-        })
-        .on_tray_icon_event(|tray, ev| {
-            if let TrayIconEvent::Click {
-                button: MouseButton::Left,
-                button_state: MouseButtonState::Up,
-                ..
-            } = ev
-            {
-                show_main(tray.app_handle());
-            }
-        })
-        .build(app)?;
-    Ok(())
-}
-
 // ---------------------------------------------------------------------- main
 
 fn main() {
     tauri::Builder::default()
+        // Must be first: a second Clipr.exe hands over to this one and exits.
+        .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
+            if !args.iter().any(|a| a == "--hidden") {
+                show_main(app);
+            }
+        }))
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
                 .with_handler(|app, _shortcut, event| {
@@ -346,6 +387,30 @@ fn main() {
                 })
                 .build(),
         )
+        .on_window_event(|window, event| {
+            if window.label() != "main" {
+                return;
+            }
+            let app = window.app_handle();
+            let Some(eng) = app.try_state::<Arc<Engine>>() else { return };
+            match event {
+                // X: hide to the tray (the default), or quit if the setting says so.
+                WindowEvent::CloseRequested { .. } => {
+                    if !eng.cfg.lock().close_to_tray {
+                        app.exit(0);
+                    }
+                }
+                WindowEvent::Resized(_) => {
+                    if eng.cfg.lock().minimize_to_tray && window.is_minimized().unwrap_or(false) {
+                        let w = window.clone();
+                        std::thread::spawn(move || {
+                            let _ = w.destroy();
+                        });
+                    }
+                }
+                _ => {}
+            }
+        })
         .invoke_handler(tauri::generate_handler![
             get_config,
             save_config,
@@ -357,12 +422,17 @@ fn main() {
             quit_app,
             rename_clip,
             get_status,
+            set_target,
             list_monitors,
             list_windows,
             list_clips,
             delete_clip,
             reveal_clip,
             open_clips_folder,
+            storage_info,
+            delete_exported_raws,
+            memory_info,
+            probe_clip,
             save_clip_now,
             export_clip,
             ffmpeg_info,
@@ -372,18 +442,16 @@ fn main() {
             let cfg = Config::load();
             let _ = std::fs::create_dir_all(&cfg.clips_dir);
             let _ = app.asset_protocol_scope().allow_directory(&cfg.clips_dir, true);
-            let hotkey = cfg.hotkey.clone();
+            let (hk1, hk2) = (cfg.hotkey.clone(), cfg.hotkey2.clone());
             let start_hidden = cfg.start_hidden || std::env::args().any(|a| a == "--hidden");
 
             let engine = Arc::new(Engine::new(app.handle().clone(), cfg));
             app.manage(engine.clone());
 
-            if let Err(e) = app.global_shortcut().register(hotkey.as_str()) {
-                engine.set_hotkey_error(Some(format!(
-                    "The hotkey {hotkey} isn't working ({e}). Another app may be using it."
-                )));
+            if let Err(e) = set_hotkeys(app.handle(), &hk1, &hk2) {
+                engine.set_hotkey_error(Some(e));
             }
-            build_tray(app)?;
+            tray::build(app)?;
             std::thread::spawn(move || engine.run_watcher());
 
             if !start_hidden {

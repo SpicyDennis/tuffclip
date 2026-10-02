@@ -1,19 +1,29 @@
 /* Clipr-specific rules. The shared look lives in theme.css (don't edit it per app). */
 
 /* ---------------------------------------------------------------- top bar extras */
+.topright { margin-left: auto; display: flex; align-items: center; gap: 20px; min-width: 0; }
+.topright .status { margin-left: 0; max-width: 64ch; }
 .buf {
-  margin-left: auto;
   color: var(--muted); font-size: 13px; font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
 .buf b { color: var(--text); font-weight: 600; }
-.buf + .status { margin-left: 0; }
+.target { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 13px; white-space: nowrap; }
+.target select { color: var(--text); padding: 3px 8px; max-width: 240px; }
 .warn { color: var(--tally); font-size: 13px; max-width: 40ch; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* needs-attention strip under the top bar (e.g. FFmpeg missing) */
+.banner {
+  display: flex; align-items: center; gap: 14px;
+  padding: 8px 18px; background: var(--panel); border-bottom: 1px solid var(--line);
+  color: var(--tally);
+}
 
 /* ---------------------------------------------------------------- library */
 .sidebar .seg { display: flex; }
 .filters { display: flex; gap: 8px; }
 .filters select { flex: 1; }
+.check.small { font-size: 13px; color: var(--muted); }
 .item .g { color: var(--muted); font-size: 12px; }
 
 .player { display: flex; flex-direction: column; gap: 16px; max-width: 1100px; margin: 0 auto; }
@@ -98,6 +108,8 @@
 .est { color: var(--muted); font-size: 13px; font-variant-numeric: tabular-nums; }
 .est b { color: var(--text); font-weight: 600; }
 .export .hint { max-width: none; }
+.progress-row { display: flex; align-items: center; gap: 14px; }
+.progress-row .progress { flex: 1; }
 
 /* ---------------------------------------------------------------- settings extras */
 #savedMsg { margin-left: auto; font-size: 13px; opacity: 0; transition: opacity 0.2s; }

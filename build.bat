@@ -4,7 +4,7 @@ title Building Clipr
 rem Works from wherever this folder lives (Desktop, Documents, ...).
 set "ROOT=%~dp0"
 set "OUT=%ROOT%build"
-set "TOTAL=5"
+set "TOTAL=4"
 
 call :now T0
 echo.
@@ -74,25 +74,12 @@ if errorlevel 1 (
 echo   OK.
 echo.
 
-echo [5/%TOTAL%] Looking for ffmpeg.exe...
-rem Put ffmpeg.exe next to Clipr.exe so it works even if PATH changes.
-if exist "%OUT%\ffmpeg.exe" (
-  echo   Already in the build folder.
-  goto :ffdone
-)
-for /f "delims=" %%F in ('where ffmpeg 2^>nul') do (
-  copy /y "%%F" "%OUT%\ffmpeg.exe" >nul
-  echo   Copied ffmpeg.exe from %%F
-  goto :ffdone
-)
-echo   Note: ffmpeg.exe was not found on PATH. Drop ffmpeg.exe into the build folder,
-echo         or set its path in Clipr's Settings.
-:ffdone
-
 call :elapsed T0 SPENT
 echo.
 echo === Done in %SPENT% ===
 echo Output: "%OUT%\Clipr.exe"
+echo FFmpeg is not part of the build. Clipr offers to download it into its own data
+echo folder the first time you open it, so the exe can live anywhere.
 explorer "%OUT%"
 pause
 exit /b 0

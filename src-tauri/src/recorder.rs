@@ -50,6 +50,8 @@ pub struct RecordSpec {
     pub src_w: u32,
     pub src_h: u32,
     pub crop: Option<Crop>,
+    /// Capture just this window (Windows Graphics Capture) instead of a monitor, so windows in front never show.
+    pub window: Option<isize>,
     pub fps: u32,
     pub height: u32,
     pub bitrate_kbps: u32,
@@ -66,8 +68,12 @@ pub struct RecordSpec {
 }
 
 impl RecordSpec {
-    pub fn new(cfg: &Config, m: &MonitorInfo, crop: Option<Crop>) -> Self {
-        let (src_w, src_h) = crop.map(|c| (c.w, c.h)).unwrap_or((m.width, m.height));
+    pub fn new(cfg: &Config, m: &MonitorInfo, crop: Option<Crop>, window: Option<(isize, u32, u32)>) -> Self {
+        let (src_w, src_h) = match (window, crop) {
+            (Some((_, w, h)), _) => (w, h),
+            (None, Some(c)) => (c.w, c.h),
+            _ => (m.width, m.height),
+        };
         let fps = if cfg.fps == 0 {
             if m.refresh_hz > 0 { m.refresh_hz.clamp(24, 240) } else { 60 }
         } else {
@@ -79,6 +85,7 @@ impl RecordSpec {
             src_w,
             src_h,
             crop,
+            window: window.map(|w| w.0),
             fps,
             height: cfg.height,
             bitrate_kbps: cfg.bitrate_kbps,
@@ -369,6 +376,25 @@ impl Recorder {
         Ok(())
     }
 
+    /// Raw handle of the ffmpeg process, for memory readouts.
+    pub fn child_handle(&self) -> Option<isize> {
+        use std::os::windows::io::AsRawHandle;
+        self.child.as_ref().map(|c| c.as_raw_handle() as isize)
+    }
+
+    /// Stop ffmpeg but hand back what the buffer holds, so a clip can still be saved afterwards.
+    /// Returns None if nothing was running or the buffer is empty.
+    pub fn stop_and_keep(&mut self) -> Option<(PathBuf, Option<Arc<RamBuf>>)> {
+        let spec = self.spec.clone()?;
+        let ram = self.ram.clone();
+        let has_data = match &ram {
+            Some(r) => r.bytes() > 0,
+            None => dir_bytes(&spec.buffer_dir) > 0,
+        };
+        self.stop();
+        has_data.then_some((spec.buffer_dir, ram))
+    }
+
     pub fn stop(&mut self) {
         if let Some(s) = self.stop_audio.take() {
             s.store(true, Relaxed);
@@ -389,7 +415,17 @@ impl Drop for Recorder {
     }
 }
 
-fn clear_buffer(dir: &Path) -> Result<()> {
+/// Size of the buffer segments in `dir`.
+pub fn dir_bytes(dir: &Path) -> u64 {
+    let Ok(rd) = fs::read_dir(dir) else { return 0 };
+    rd.flatten()
+        .filter(|e| e.path().extension().and_then(|x| x.to_str()) == Some("ts"))
+        .filter_map(|e| e.metadata().ok())
+        .map(|m| m.len())
+        .sum()
+}
+
+pub fn clear_buffer(dir: &Path) -> Result<()> {
     fs::create_dir_all(dir)?;
     for e in fs::read_dir(dir)?.flatten() {
         let p = e.path();
@@ -422,13 +458,24 @@ fn build_args(s: &RecordSpec, audio: Option<AudioFormat>) -> Vec<String> {
         arg!("-thread_queue_size", 4096, "-f", "f32le", "-ar", f.rate, "-ac", f.channels, "-i", "pipe:0");
     }
 
-    let mut vf = format!(
-        "ddagrab=output_idx={}:framerate={}:draw_mouse={}",
-        s.output, s.fps, s.draw_mouse as u8
-    );
-    if let Some(c) = s.crop {
-        vf += &format!(":video_size={}x{}:offset_x={}:offset_y={}", c.w, c.h, c.x, c.y);
-    }
+    let mut vf = if let Some(hwnd) = s.window {
+        // Window capture: only this window's pixels, however many windows are on top of it.
+        // Frames only arrive when the window changes, so `fps` fills the gaps to keep a steady rate.
+        // A resized window is letterboxed into the original size instead of restarting the recording.
+        format!(
+            "gfxcapture=hwnd={hwnd}:capture_cursor={}:max_framerate={}:width=-2:height=-2:resize_mode=scale_aspect,fps={}",
+            s.draw_mouse as u8, s.fps, s.fps
+        )
+    } else {
+        let mut v = format!(
+            "ddagrab=output_idx={}:framerate={}:draw_mouse={}",
+            s.output, s.fps, s.draw_mouse as u8
+        );
+        if let Some(c) = s.crop {
+            v += &format!(":video_size={}x{}:offset_x={}:offset_y={}", c.w, c.h, c.x, c.y);
+        }
+        v
+    };
     if s.height != 0 && s.height < s.src_h {
         let w = even(s.src_w * s.height / s.src_h);
         vf += &format!(",scale_d3d11={}:{}", w, even(s.height));
@@ -490,7 +537,7 @@ fn prepare_out(out: &Path) -> Result<()> {
 }
 
 /// Stitch the newest segments into an mp4 at `out`. Stream copy, no re-encode.
-pub fn save_buffer(ffmpeg: &str, buffer_dir: &Path, seconds: u32, out: &Path) -> Result<()> {
+pub fn save_buffer(ffmpeg: &str, buffer_dir: &Path, seconds: u32, out: &Path, gentle: bool) -> Result<()> {
     let mut segs: Vec<(SystemTime, PathBuf)> = fs::read_dir(buffer_dir)?
         .flatten()
         .filter_map(|e| {
@@ -524,7 +571,7 @@ pub fn save_buffer(ffmpeg: &str, buffer_dir: &Path, seconds: u32, out: &Path) ->
     fs::write(&list, body)?;
     prepare_out(out)?;
 
-    let mut c = ff::cmd(ffmpeg);
+    let mut c = if gentle { ff::cmd_low(ffmpeg) } else { ff::cmd(ffmpeg) };
     c.args(["-hide_banner", "-loglevel", "error", "-y", "-f", "concat", "-safe", "0", "-i"])
         .arg(&list)
         .args(["-map", "0", "-c", "copy", "-movflags", "+faststart"])
@@ -535,7 +582,7 @@ pub fn save_buffer(ffmpeg: &str, buffer_dir: &Path, seconds: u32, out: &Path) ->
 }
 
 /// Same as `save_buffer`, but the segments come from memory and are piped into ffmpeg.
-pub fn save_ram(ffmpeg: &str, ram: &RamBuf, seconds: u32, out: &Path) -> Result<()> {
+pub fn save_ram(ffmpeg: &str, ram: &RamBuf, seconds: u32, out: &Path, gentle: bool) -> Result<()> {
     let need = (seconds.div_ceil(SEG_SECS) + 1) as usize;
     let (header, parts) = ram.snapshot(need);
     if parts.is_empty() {
@@ -543,7 +590,7 @@ pub fn save_ram(ffmpeg: &str, ram: &RamBuf, seconds: u32, out: &Path) -> Result<
     }
     prepare_out(out)?;
 
-    let mut c = ff::cmd(ffmpeg);
+    let mut c = if gentle { ff::cmd_low(ffmpeg) } else { ff::cmd(ffmpeg) };
     c.args([
         "-hide_banner", "-loglevel", "error", "-y", "-f", "mpegts", "-i", "pipe:0",
         "-map", "0:v:0", "-map", "0:a?", "-c", "copy", "-avoid_negative_ts", "make_zero",

@@ -1,4 +1,4 @@
-﻿"use strict";
+"use strict";
 const { invoke, convertFileSrc } = window.__TAURI__.core;
 const { listen } = window.__TAURI__.event;
 
@@ -6,27 +6,44 @@ const $ = (s) => document.querySelector(s);
 const $$ = (s) => [...document.querySelectorAll(s)];
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
+// small per-viewer preferences (remembered between runs; never required)
+const store = {
+  get(k, d) { try { const v = localStorage.getItem(k); return v === null ? d : JSON.parse(v); } catch { return d; } },
+  set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} },
+};
+
+const HEVC_RATIO = 0.65; // HEVC needs about this share of H.264's bitrate for the same picture quality
+
 const S = {
   cfg: null,
   view: "library",
   kind: "raw",
   clips: [],
   game: "all",
-  sort: "new",
+  sort: store.get("clipr.sort", "new"),
+  group: store.get("clipr.group", false),
   sel: null,         // selected clip object
+  selKind: "raw",
   dur: 0,
   start: 0,
   end: 0,
   keep: null,        // trim to restore after the video reloads (rename)
   previewing: false,
+  freeRoam: false,   // the playhead was put outside the trim on purpose, so playback may leave it
   mode: "original",  // export: original | size | bitrate
+  format: store.get("clipr.format", "mp4"),
+  codec: store.get("clipr.codec", "keep"), // export: keep | h264 | hevc
+  srcCodec: "",      // the selected clip's own video codec
   mb: 0,             // export: target size
   kbps: 0,           // export: target video bitrate
   nameTouched: false,
   exporting: false,
+  expStart: 0,
   monitors: [],
   ff: null,
   warn: "",
+  status: null,
+  targetSig: "",
 };
 
 // ------------------------------------------------------------------ utils
@@ -47,6 +64,11 @@ function fmtDate(sec) {
   return d.toLocaleDateString(undefined, { month: "short", day: "numeric" }) + ", " +
          d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
 }
+function fmtEta(s) {
+  s = Math.max(1, Math.round(s));
+  return s < 60 ? `${s} s` : `${Math.floor(s / 60)} min ${s % 60} s`;
+}
+const plural = (n, w) => `${n} ${w}${n === 1 ? "" : "s"}`;
 function toast(msg, err = false) {
   const el = document.createElement("div");
   el.className = "toast" + (err ? " err" : "");
@@ -68,6 +90,19 @@ const rateToInput = (kbps) => (unit() === "mbps" ? Math.round(kbps / 100) / 10 :
 const inputToRate = (v) => Math.round(unit() === "mbps" ? v * 1000 : v);
 const unitLabel = () => (unit() === "mbps" ? "Mbps" : "kbps");
 
+// A yes/no question that needs a real answer (used for anything that deletes or resets).
+function confirmDialog(title, body, okLabel) {
+  return new Promise((resolve) => {
+    const d = $("#confirm");
+    $("#confirmTitle").textContent = title;
+    $("#confirmBody").textContent = body;
+    $("#confirmOk").textContent = okLabel;
+    d.returnValue = "cancel";
+    d.addEventListener("close", () => resolve(d.returnValue === "ok"), { once: true });
+    d.showModal();
+  });
+}
+
 // ------------------------------------------------------------------ views
 function showView(v) {
   S.view = v;
@@ -75,7 +110,7 @@ function showView(v) {
   $("#view-settings").hidden = v !== "settings";
   $("#tabLibrary").classList.toggle("active", v === "library");
   $("#tabSettings").classList.toggle("active", v === "settings");
-  if (v === "settings") openSettings();
+  if (v === "settings") openSettings(); else stopMemPoll();
 }
 $("#tabLibrary").addEventListener("click", () => showView("library"));
 $("#tabSettings").addEventListener("click", () => showView("settings"));
@@ -145,6 +180,7 @@ document.addEventListener("menu-action", (e) => {
   }
 });
 document.addEventListener("keydown", (e) => {
+  if ($("#confirm").open) return; // the dialog handles its own Esc / Enter
   if (e.ctrlKey && e.key === ",") { e.preventDefault(); showView("settings"); }
   else if (e.ctrlKey && e.key.toLowerCase() === "q") { e.preventDefault(); invoke("quit_app"); }
   else if (e.key === "Escape" && !e.defaultPrevented) {
@@ -154,20 +190,52 @@ document.addEventListener("keydown", (e) => {
 });
 
 // ------------------------------------------------------------------ status
-function renderStatus(st) {
-  const el = $("#status");
-  el.classList.toggle("live", !!st.recording);
-  el.classList.toggle("err", !!st.error);
+const hotkeyText = () => S.cfg?.hotkey || "the hotkey";
+
+function updateStatusText() {
+  const st = S.status;
+  if (!st) return;
+  const held = !st.recording && !!st.held_until_ms;
   let text;
   if (st.error) text = st.error;
   else if (st.recording) {
-    const where = st.region && st.region !== "whole display" ? `, ${st.region}` : "";
-    text = `Recording ${st.game || "desktop"} (${(st.monitor || "").replace(/ \(.*/, "")}${where}, ${st.fps} fps)`;
-  }
+    const mon = (st.monitor || "").replace(/ \(.*/, "");
+    const region = st.region && st.region !== "whole display" ? st.region : "";
+    text = [`Recording ${st.game || "desktop"}`, mon, region, `${st.fps} fps`].filter(Boolean).join(" · ");
+  } else if (held) {
+    const left = Math.max(0, Math.round((st.held_until_ms - Date.now()) / 1000));
+    text = `${st.game} closed · buffer kept ${Math.floor(left / 60)}:${String(left % 60).padStart(2, "0")} · ${hotkeyText()} still saves`;
+  } else if (st.game && st.region) text = `Waiting for ${st.game}'s window`;
   else if (S.cfg?.mode === "games") text = S.cfg.games.some((g) => g.enabled) ? "Waiting for a game" : "Add a game in Settings to start";
   else text = "Idle";
   $("#statusText").textContent = text;
-  el.title = text;
+  $("#status").title = st.summary ? `${text}\n${st.summary}` : text;
+}
+setInterval(() => { if (S.status?.held_until_ms && !S.status.recording) updateStatusText(); }, 1000);
+
+function renderTarget(st) {
+  const choices = st.choices || [];
+  $("#targetWrap").hidden = choices.length < 2;
+  if (choices.length < 2) { S.targetSig = ""; return; }
+  const sel = $("#targetSel");
+  const sig = choices.map((c) => `${c.exe}|${c.name}|${c.clips}`).join(",");
+  if (sig !== S.targetSig) {
+    sel.innerHTML = choices.map((c) => `<option value="${esc(c.exe)}">${esc(c.name)} · ${plural(c.clips, "clip")}</option>`).join("");
+    S.targetSig = sig;
+  }
+  if (document.activeElement !== sel && st.target) sel.value = st.target;
+}
+$("#targetWrap").title = "Several of your games are running. Clipr records the one you've clipped most; pick another to switch (this restarts its buffer).";
+$("#targetSel").addEventListener("change", (e) => invoke("set_target", { exe: e.target.value }).catch((x) => toast(String(x), true)));
+
+function renderStatus(st) {
+  S.status = st;
+  const el = $("#status");
+  el.classList.toggle("live", !!st.recording);
+  el.classList.toggle("ok", !st.recording && !!st.held_until_ms);
+  el.classList.toggle("err", !!st.error);
+  updateStatusText();
+  renderTarget(st);
 
   const buf = $("#buf");
   if (st.recording || st.buffer_bytes > 0) {
@@ -201,20 +269,19 @@ function renderGameFilter() {
 }
 
 function visibleClips() {
-  let v = S.clips.filter((c) => S.game === "all" || c.game === S.game);
+  const v = S.clips.filter((c) => S.game === "all" || c.game === S.game);
   const by = {
     new: (a, b) => b.modified - a.modified,
     old: (a, b) => a.modified - b.modified,
     size: (a, b) => b.size - a.size,
-    game: (a, b) => a.game.localeCompare(b.game) || b.modified - a.modified,
-  }[S.sort];
-  return v.sort(by);
+  }[S.sort] || ((a, b) => b.modified - a.modified);
+  return v.sort(S.group ? (a, b) => a.game.localeCompare(b.game) || by(a, b) : by);
 }
 
 function renderList() {
   const list = visibleClips();
   const box = $("#clipList");
-  $("#clipCount").textContent = `${list.length} clip${list.length === 1 ? "" : "s"}`;
+  $("#clipCount").textContent = plural(list.length, "clip");
   if (!list.length) {
     box.innerHTML = `<div class="list-empty">${
       S.kind === "raw"
@@ -226,24 +293,27 @@ function renderList() {
   let html = "";
   let lastGame = null;
   for (const c of list) {
-    if (S.sort === "game" && c.game !== lastGame) {
+    if (S.group && c.game !== lastGame) {
       html += `<div class="group-head">${esc(c.game)}</div>`;
       lastGame = c.game;
     }
     const active = S.sel && S.sel.path === c.path ? " active" : "";
+    const sub = [S.group ? "" : esc(c.game), c.exported ? "exported" : ""].filter(Boolean).join(" · ");
     html += `<div class="item${active}" data-path="${esc(c.path)}">
       <span class="n" title="${esc(c.name)}">${esc(c.name)}</span><span class="s">${fmtSize(c.size)}</span>
-      <span class="g">${S.sort === "game" ? "" : esc(c.game)}</span><span class="s">${fmtDate(c.modified)}</span>
+      <span class="g">${sub}</span><span class="s">${fmtDate(c.modified)}</span>
     </div>`;
   }
   box.innerHTML = html;
 }
 
+// Clicking the clip that is already open closes it and brings back the blank screen.
 $("#clipList").addEventListener("click", (e) => {
   const row = e.target.closest(".item");
   if (!row) return;
   const clip = S.clips.find((c) => c.path === row.dataset.path);
-  if (clip) selectClip(clip);
+  if (!clip) return;
+  if (S.sel && S.sel.path === clip.path) closeClip(); else selectClip(clip);
 });
 
 $$("#kindSeg button").forEach((b) =>
@@ -254,7 +324,8 @@ $$("#kindSeg button").forEach((b) =>
   })
 );
 $("#gameFilter").addEventListener("change", (e) => { S.game = e.target.value; renderList(); });
-$("#sortSel").addEventListener("change", (e) => { S.sort = e.target.value; renderList(); });
+$("#sortSel").addEventListener("change", (e) => { S.sort = e.target.value; store.set("clipr.sort", S.sort); renderList(); });
+$("#groupBy").addEventListener("change", (e) => { S.group = e.target.checked; store.set("clipr.group", S.group); renderList(); });
 $("#openFolder").addEventListener("click", () => invoke("open_clips_folder", { kind: S.kind }).catch((e) => toast(e, true)));
 
 // ------------------------------------------------------------------ player
@@ -262,8 +333,11 @@ const video = $("#video");
 
 function selectClip(clip) {
   S.sel = clip;
+  S.selKind = S.kind;
   S.keep = null;
   S.nameTouched = false;
+  S.freeRoam = false;
+  S.srcCodec = "";
   $("#emptyStage").hidden = true;
   $("#player").hidden = false;
   $("#clipTitle").value = clip.name;
@@ -273,6 +347,23 @@ function selectClip(clip) {
   disarmDelete();
   renderList();
   renderTrim();
+  const path = clip.path;
+  invoke("probe_clip", { path }).then((c) => {
+    if (S.sel && S.sel.path === path) { S.srcCodec = c; renderExport(); }
+  }).catch(() => {});
+}
+
+function closeClip() {
+  S.sel = null;
+  S.keep = null;
+  S.previewing = false;
+  video.pause();
+  video.removeAttribute("src");
+  video.load(); // lets go of the file
+  $("#player").hidden = true;
+  $("#emptyStage").hidden = false;
+  disarmDelete();
+  renderList();
 }
 
 video.addEventListener("loadedmetadata", () => {
@@ -280,7 +371,7 @@ video.addEventListener("loadedmetadata", () => {
   if (S.keep) {
     S.start = Math.min(S.keep.start, S.dur);
     S.end = Math.min(S.keep.end, S.dur);
-    video.currentTime = Math.min(S.keep.t, S.dur);
+    seekTo(Math.min(S.keep.t, S.dur));
     S.keep = null;
   } else {
     S.start = 0;
@@ -288,17 +379,52 @@ video.addEventListener("loadedmetadata", () => {
   }
   renderTrim();
 });
-video.addEventListener("timeupdate", () => {
-  if (S.previewing && video.currentTime >= S.end) {
-    video.pause();
-    S.previewing = false;
-  }
-  renderHead();
-});
-video.addEventListener("pause", () => (S.previewing = false));
+video.addEventListener("timeupdate", renderHead);
 video.addEventListener("error", () => {
   if (S.keep) return; // we removed the source on purpose (rename)
   if (video.getAttribute("src")) toast("This clip can't be played here. HEVC needs Microsoft's HEVC Video Extensions.", true);
+});
+
+// ---- playback stays inside the trim unless you deliberately put the playhead outside it
+const bounds = { raf: 0, prog: { t: -1, at: 0 } };
+function seekTo(t) {
+  bounds.prog = { t, at: performance.now() };
+  video.currentTime = t;
+}
+// A seek we didn't make is the user's: if it lands outside the trim, let playback roam from there.
+video.addEventListener("seeking", () => {
+  const p = bounds.prog;
+  if (performance.now() - p.at < 1500 && Math.abs(video.currentTime - p.t) < 0.1) return;
+  S.freeRoam = S.dur > 0 && (video.currentTime < S.start - 0.01 || video.currentTime > S.end + 0.01);
+});
+function guard() {
+  bounds.raf = 0;
+  if (video.paused || !S.dur) return;
+  const t = video.currentTime;
+  if (S.freeRoam) {
+    if (t >= S.start && t < S.end) S.freeRoam = false; // back inside: the trim applies again
+  } else if (t >= S.end - 0.03) {
+    if (S.previewing) { video.pause(); S.previewing = false; }
+    else seekTo(S.start); // loop the selection
+  } else if (t < S.start - 0.05) {
+    seekTo(S.start);
+  }
+  bounds.raf = requestAnimationFrame(guard);
+}
+video.addEventListener("play", () => {
+  if (S.dur && !S.freeRoam) {
+    const t = video.currentTime;
+    if (t < S.start - 0.05 || t >= S.end - 0.05) seekTo(S.start);
+  }
+  if (!bounds.raf) bounds.raf = requestAnimationFrame(guard);
+});
+video.addEventListener("pause", () => {
+  S.previewing = false;
+  cancelAnimationFrame(bounds.raf);
+  bounds.raf = 0;
+});
+video.addEventListener("ended", () => {
+  if (S.dur && !S.freeRoam) { seekTo(S.start); video.play().catch(() => {}); }
 });
 
 // rename the raw clip right in its title
@@ -367,9 +493,9 @@ tl.addEventListener("pointermove", (e) => drag && move(e));
 tl.addEventListener("pointerup", () => (drag = null));
 function move(e) {
   const t = timeAt(e.clientX);
-  if (drag === "start") { setStart(t); video.currentTime = S.start; }
-  else if (drag === "end") { setEnd(t); video.currentTime = S.end; }
-  else { video.currentTime = t; renderHead(); }
+  if (drag === "start") { setStart(t); S.freeRoam = false; seekTo(S.start); }
+  else if (drag === "end") { setEnd(t); S.freeRoam = false; seekTo(S.end); }
+  else { video.currentTime = t; renderHead(); } // a click or drag on the bar is on purpose, even outside the trim
 }
 [$("#hStart"), $("#hEnd")].forEach((h) =>
   h.addEventListener("keydown", (e) => {
@@ -383,15 +509,16 @@ function move(e) {
 
 $("#setStart").addEventListener("click", () => setStart(video.currentTime));
 $("#setEnd").addEventListener("click", () => setEnd(video.currentTime));
-$("#resetTrim").addEventListener("click", () => { S.start = 0; S.end = S.dur; renderTrim(); });
+$("#resetTrim").addEventListener("click", () => { S.start = 0; S.end = S.dur; S.freeRoam = false; renderTrim(); });
 $("#previewSel").addEventListener("click", () => {
-  video.currentTime = S.start;
-  S.previewing = true;
-  video.play();
+  S.freeRoam = false;
+  seekTo(S.start);
+  video.play().catch(() => {});
+  S.previewing = true; // set after play(): the pause event of a restart clears it
 });
 
 document.addEventListener("keydown", (e) => {
-  if (S.view !== "library" || !S.sel || inInput() || e.ctrlKey || e.altKey || e.metaKey) return;
+  if (S.view !== "library" || !S.sel || inInput() || e.ctrlKey || e.altKey || e.metaKey || $("#confirm").open) return;
   const k = e.key.toLowerCase();
   if (k === "i") setStart(video.currentTime);
   else if (k === "o") setEnd(video.currentTime);
@@ -403,7 +530,13 @@ const SIZE_PRESETS = [5, 10, 25, 50, 100, 200, 500];
 const RATE_PRESETS = [1000, 2500, 5000, 8000, 15000, 25000, 40000, 60000];
 
 const audioTier = (total) => (total < 600 ? 48 : total < 2000 ? 96 : 128);
-const isWebm = () => S.cfg?.export_format === "webm";
+const isWebm = () => S.format === "webm";
+const srcCodec = () => S.srcCodec || S.cfg?.codec || "h264";
+// "Same as clip" can only mean something when nothing but the cut changes; otherwise it's H.264.
+const effCodec = () => (S.mode === "original" ? S.codec : S.codec === "keep" ? "h264" : S.codec);
+// Original quality in a different codec: a quality-matched re-encode instead of a straight copy.
+const recoding = () => S.mode === "original" && !isWebm() && S.codec !== "keep" && S.codec !== srcCodec();
+const codecName = (c) => ({ h264: "H.264", hevc: "HEVC" }[c] || c);
 
 // What the clip itself weighs, so nothing can be exported bigger than "native".
 function native() {
@@ -414,10 +547,12 @@ function native() {
 }
 const sizeOk = (mb, n) => mb > 0 && mb < n.mb * 0.98;
 const rateOk = (k, n) => k >= 300 && k <= n.cap;
+const mbAt = (kbps, len) => (kbps * 1000 / 8 * len) / 1e6;
 
 function exportTag() {
   if (S.mode === "size" && S.mb > 0) return `${Number.isInteger(S.mb) ? S.mb : S.mb.toFixed(1)}MB`;
   if (S.mode === "bitrate" && S.kbps > 0) return `${trimNum(S.kbps / 1000)}Mbps`;
+  if (recoding()) return effCodec();
   return "trim";
 }
 function renderName() {
@@ -450,11 +585,17 @@ function pickDefaults(n) {
 
 function renderExport() {
   const n = native();
-  const reencode = S.mode !== "original" || isWebm();
+  const webm = isWebm();
+  const recode = recoding();
+  const reencode = S.mode !== "original" || webm || recode;
   $$("#modeSeg button").forEach((b) => b.classList.toggle("active", b.dataset.mode === S.mode));
   $("#sizeRow").hidden = S.mode !== "size";
   $("#rateRow").hidden = S.mode !== "bitrate";
-  $("#expFormat").value = S.cfg?.export_format || "mp4";
+  $("#expFormat").value = S.format;
+  const cs = $("#expCodec");
+  cs.querySelector('[value="keep"]').disabled = S.mode !== "original";
+  cs.disabled = webm;
+  cs.value = webm ? "vp9" : effCodec();
   $("#expRes").disabled = !reencode;
   $("#expPrecise").disabled = !reencode;
   $("#customRateUnit").textContent = unitLabel();
@@ -469,6 +610,7 @@ function renderExport() {
     pickDefaults(n);
     const customMb = $("#customMb").value !== "";
     const customRate = $("#customRate").value !== "";
+    const hevc = effCodec() === "hevc" && !webm;
 
     if (S.mode === "size") {
       const presets = SIZE_PRESETS.filter((m) => sizeOk(m, n));
@@ -486,6 +628,7 @@ function renderExport() {
         const v = (S.mb * 8000 * 0.96) / n.len - audioTier((S.mb * 8000 * 0.96) / n.len);
         if (v < 800) hint = "That will look rough. Trim shorter or raise the size.";
         else hint = "Picks a bitrate so the file lands near this size.";
+        if (hevc) hint += ` HEVC keeps more detail at the same size: it looks about like H.264 at ${fmtMb(S.mb / HEVC_RATIO)}.`;
       }
     } else if (S.mode === "bitrate") {
       const presets = RATE_PRESETS.filter((k) => rateOk(k, n));
@@ -503,16 +646,26 @@ function renderExport() {
       valid = rateOk(S.kbps, n);
       if (valid) {
         const total = S.kbps + audioTier(S.kbps + 128);
-        est = `About <b>${fmtMb((total * 1000 / 8 * n.len) / 1e6)}</b>`;
+        est = `About <b>${fmtMb(mbAt(total, n.len))}</b>`;
         hint = S.kbps < 800 ? "That will look rough." : "Video bitrate; audio is added on top.";
+        if (hevc) hint += ` HEVC looks about like H.264 at ${fmtRate(S.kbps / HEVC_RATIO)}.`;
       }
+    } else if (webm) {
+      est = `About <b>${fmtMb(mbAt(n.total * 0.85, n.len))}</b>`;
+      hint = ".webm can't hold this clip's video as it is, so it's re-encoded as VP9. That takes a while and keeps roughly the same quality in about 15% less space.";
+    } else if (recode) {
+      const r = hevc ? HEVC_RATIO : 1 / HEVC_RATIO;
+      const v = Math.max(500, n.total - 128) * r;
+      est = `About <b>${fmtMb(mbAt(v + 128, n.len))}</b>`;
+      hint = hevc
+        ? "Re-encodes as HEVC at the same picture quality: about a third smaller, but it takes longer and not every player or site takes HEVC. Audio is untouched."
+        : "Re-encodes as H.264 at the same picture quality: bigger than HEVC, but plays everywhere. Audio is untouched.";
     } else {
-      est = `About <b>${fmtMb(n.mb)}</b>`;
-      hint = isWebm()
-        ? "WebM can't hold this clip's video as it is, so it's re-encoded. That takes a while and keeps roughly the same quality."
-        : "Cuts land on the nearest keyframe. Instant and lossless.";
+      est = `About <b>${fmtMb(n.mb * (S.format === "mkv" ? 0.99 : 1))}</b>`;
+      hint = "Cuts land on the nearest keyframe. Instant and lossless." +
+        (S.format === "mkv" ? " .mkv comes out about 1% smaller than .mp4." : "");
     }
-    if (isWebm() && S.mode !== "original") hint += " WebM is re-encoded on the CPU, so it takes longer.";
+    if (webm && S.mode !== "original") hint += " .webm is re-encoded on the CPU, so it takes longer.";
   }
   $("#estimate").innerHTML = est;
   $("#modeHint").textContent = hint;
@@ -544,17 +697,29 @@ $("#customRate").addEventListener("input", (e) => {
   S.kbps = v > 0 ? inputToRate(v) : 0;
   renderExport();
 });
-$("#expFormat").addEventListener("change", (e) => setCfg({ export_format: e.target.value }));
+$("#expFormat").addEventListener("change", (e) => {
+  S.format = e.target.value;
+  store.set("clipr.format", S.format);
+  renderExport();
+});
+$("#expCodec").addEventListener("change", (e) => {
+  if (e.target.value === "vp9") return;
+  S.codec = e.target.value;
+  store.set("clipr.codec", S.codec);
+  renderExport();
+});
 $("#expRes").addEventListener("change", renderExport);
 
 $("#exportBtn").addEventListener("click", async () => {
   const n = native();
   if (!S.sel || !n || S.exporting) return;
   S.exporting = true;
+  S.expStart = Date.now();
   $("#exportBtn").disabled = true;
   $("#exportBtn").textContent = "Exporting";
   $("#progress").hidden = false;
   $("#progressBar").style.width = "0%";
+  $("#progressInfo").textContent = "Starting…";
   try {
     const out = await invoke("export_clip", {
       req: {
@@ -562,6 +727,8 @@ $("#exportBtn").addEventListener("click", async () => {
         start: S.start,
         end: S.end,
         mode: S.mode,
+        format: S.format,
+        codec: S.codec,
         target_mb: S.mode === "size" ? S.mb : 0,
         target_kbps: S.mode === "bitrate" ? S.kbps : 0,
         height: Number($("#expRes").value),
@@ -572,7 +739,7 @@ $("#exportBtn").addEventListener("click", async () => {
     });
     toast(`Exported ${baseName(out)}`);
     S.nameTouched = false;
-    if (S.kind === "exports") loadClips();
+    loadClips(); // the raw clip now shows as exported
   } catch (e) {
     toast(String(e), true);
   } finally {
@@ -606,9 +773,7 @@ $("#deleteBtn").addEventListener("click", async () => {
   video.load(); // release the file handle before deleting
   try {
     await invoke("delete_clip", { path });
-    S.sel = null;
-    $("#player").hidden = true;
-    $("#emptyStage").hidden = false;
+    closeClip();
     loadClips();
   } catch (e) {
     toast(String(e), true);
@@ -640,6 +805,7 @@ async function flush() {
     await invoke("save_config", { cfg: { ...S.cfg } });
     S.cfg = await invoke("get_config");
     flash("Saved");
+    $("#hotkeyErr").hidden = true;
     fillControls();
     renderEstimates();
     renderExport();
@@ -664,13 +830,6 @@ function setCfg(patch) {
 function setSeg(sel, attr, val) {
   $$(`${sel} button`).forEach((b) => b.classList.toggle("active", b.dataset[attr] === val));
 }
-
-const FORMAT_HINTS = {
-  mp4: "Plays almost everywhere. Exporting the original quality is instant.",
-  mkv: "Holds anything, but some editors and websites won't take it.",
-  mov: "Handy for editing on a Mac or in some video editors.",
-  webm: "Small and web-friendly. Every WebM export is re-encoded, so it takes longer and uses more CPU.",
-};
 
 function monitorHz() {
   const id = S.cfg?.mode === "desktop" ? S.cfg.monitor : null;
@@ -701,19 +860,24 @@ function renderEstimates() {
   const clipMb = (total * c.clip_seconds) / 8 / 1000;
   const bufSecs = Math.ceil(c.clip_seconds / 2) * 2 + 8;
   const bufMb = (total * bufSecs) / 8 / 1000;
+  const audio = c.audio ? c.audio_kbps : 0;
+  const hevc = c.codec === "hevc";
+  // Same picture quality in the other codec (an estimate; it varies with the game).
+  const otherRate = Math.round(hevc ? c.bitrate_kbps / HEVC_RATIO : c.bitrate_kbps * HEVC_RATIO);
+  const otherClip = ((otherRate + audio) * c.clip_seconds) / 8 / 1000;
   $("#clipEstimate").innerHTML =
     `A <b>${c.clip_seconds} s</b> clip is about <b>${fmtMb(clipMb)}</b>. ` +
-    `While recording, the buffer holds up to about <b>${fmtMb(bufMb)}</b> ${c.buffer_in_ram ? "in RAM" : "on disk"}.`;
+    `While recording, the buffer holds up to about <b>${fmtMb(bufMb)}</b> ${c.buffer_in_ram ? "in RAM" : "on disk"}.<br>` +
+    (hevc
+      ? `H.264 would need about <b>${fmtRate(otherRate)}</b> to look as good as HEVC does here, which makes a <b>${fmtMb(otherClip)}</b> clip.`
+      : `HEVC would look the same at about <b>${fmtRate(otherRate)}</b>, which makes a <b>${fmtMb(otherClip)}</b> clip. Switch the codec above to try it.`);
   $("#ramHint").textContent = c.buffer_in_ram
-    ? `Uses about ${fmtMb(bufMb)} of memory while recording and writes nothing to your drive. It's emptied when recording stops.`
+    ? `Uses about ${fmtMb(bufMb)} of memory while recording and writes nothing to your drive. It's emptied when recording stops, or a few minutes after the game closes.`
     : `Off: the buffer (about ${fmtMb(bufMb)}) is written to your drive. Turn on to keep it in memory and spare your SSD.`;
   $("#bufferDirField").hidden = !!c.buffer_in_ram;
-  $("#formatHint").textContent = FORMAT_HINTS[c.export_format] +
-    (c.export_format === "webm" && S.ff?.ok && !S.ff.vp9 ? " This FFmpeg build has no VP9 encoder, so WebM won't work." : "");
-  $("#formatHint").classList.toggle("err", c.export_format === "webm" && !!S.ff?.ok && !S.ff.vp9);
 }
 
-// Put config values into the controls. `skipActive` keeps whatever the user is typing in.
+// Put config values into the controls. `force` also overwrites the field being edited.
 function fillControls(force = false) {
   const c = S.cfg;
   if (!c) return;
@@ -722,30 +886,41 @@ function fillControls(force = false) {
 
   setSeg("#captureSeg", "mode", c.mode);
   $("#monitorField").hidden = c.mode !== "desktop";
+  $("#methodField").hidden = c.mode !== "games";
+  $$("#methodChips button").forEach((b) => b.classList.toggle("active", b.dataset.method === c.capture_method));
+  $("#methodHint").textContent = c.capture_method === "window"
+    ? "Records only the game's own window, so anything in front of it (Discord, a browser, a notification) never shows up. If a game's clips come out black, switch to Whole display."
+    : "Records everything on the monitor, cropped to the game's window if it isn't fullscreen. Anything in front of the game is recorded too.";
   $("#modeHint2").textContent =
     c.mode === "games"
-      ? "Records the monitor your game is on, only while one of your games is running. Nothing runs otherwise."
+      ? "Records the game's window, only while one of your games is running. Nothing runs otherwise."
       : "Records the chosen monitor all the time. Clips made while a listed game is focused are still filed under that game.";
+  $("#closeHint").textContent = c.close_to_tray
+    ? "The X closes this window; Clipr keeps recording from the tray."
+    : "The X quits Clipr completely, which also stops recording.";
   set("#monitorSel", (el) => { if (c.monitor) el.value = c.monitor; });
   set("#drawMouse", (el) => (el.checked = c.draw_mouse));
   set("#startHidden", (el) => (el.checked = c.start_hidden));
+  set("#closeToTray", (el) => (el.checked = c.close_to_tray));
+  set("#minToTray", (el) => (el.checked = c.minimize_to_tray));
   set("#beep", (el) => (el.checked = c.beep));
   set("#audio", (el) => (el.checked = c.audio));
-  set("#exportGentle", (el) => (el.checked = c.export_gentle));
+  set("#gentleSave", (el) => (el.checked = c.gentle_save));
   set("#bufferRam", (el) => (el.checked = c.buffer_in_ram));
   set("#height", (el) => (el.value = String(c.height)));
   set("#encoder", (el) => (el.value = c.encoder));
   set("#codec", (el) => (el.value = c.codec));
   set("#clipSeconds", (el) => (el.value = c.clip_seconds));
+  set("#holdMinutes", (el) => (el.value = c.hold_minutes));
   set("#audioKbps", (el) => (el.value = c.audio_kbps));
   set("#audioOffset", (el) => (el.value = c.audio_offset_ms));
   set("#clipsDir", (el) => (el.value = c.clips_dir));
   set("#bufferDir", (el) => (el.value = c.buffer_dir || ""));
   set("#ffmpeg", (el) => (el.value = c.ffmpeg));
   set("#hotkey", (el) => { if (!el.classList.contains("listening")) el.value = c.hotkey; });
+  set("#hotkey2", (el) => { if (!el.classList.contains("listening")) el.value = c.hotkey2 || ""; });
 
   $$("#unitChips button").forEach((b) => b.classList.toggle("active", b.dataset.unit === unit()));
-  $$("#formatChips button").forEach((b) => b.classList.toggle("active", b.dataset.fmt === c.export_format));
   $("#bitrateLabel").textContent = `Bitrate (${unitLabel()})`;
   $("#bitrateUnit").textContent = unitLabel();
   const br = $("#bitrate");
@@ -773,6 +948,8 @@ async function openSettings() {
   renderEstimates();
   refreshRunning();
   renderFfHints();
+  renderStorage();
+  startMemPoll();
   try {
     const info = await invoke("app_info");
     $("#autostart").checked = info.autostart;
@@ -801,9 +978,11 @@ function numField(el, min, max) {
 
 onChange("#drawMouse", (el) => ({ draw_mouse: el.checked }));
 onChange("#startHidden", (el) => ({ start_hidden: el.checked }));
+onChange("#closeToTray", (el) => ({ close_to_tray: el.checked }));
+onChange("#minToTray", (el) => ({ minimize_to_tray: el.checked }));
 onChange("#beep", (el) => ({ beep: el.checked }));
 onChange("#audio", (el) => ({ audio: el.checked }));
-onChange("#exportGentle", (el) => ({ export_gentle: el.checked }));
+onChange("#gentleSave", (el) => ({ gentle_save: el.checked }));
 onChange("#bufferRam", (el) => ({ buffer_in_ram: el.checked }));
 onChange("#height", (el) => ({ height: Number(el.value) }));
 onChange("#fps", (el) => ({ fps: Number(el.value) }));
@@ -819,6 +998,10 @@ onChange("#clipSeconds", (el) => {
   const v = numField(el, 5, 600);
   return v === undefined ? undefined : { clip_seconds: Math.round(v) };
 });
+onChange("#holdMinutes", (el) => {
+  const v = numField(el, 0, 60);
+  return v === undefined ? undefined : { hold_minutes: Math.round(v) };
+});
 onChange("#audioKbps", (el) => {
   const v = numField(el, 64, 320);
   return v === undefined ? undefined : { audio_kbps: Math.round(v) };
@@ -833,11 +1016,11 @@ onChange("#ffmpeg", (el) => ({ ffmpeg: el.value.trim() }));
 $("#ffmpeg").addEventListener("change", () => setTimeout(renderFfHints, 600));
 
 $$("#captureSeg button").forEach((b) => b.addEventListener("click", () => setCfg({ mode: b.dataset.mode })));
+$$("#methodChips button").forEach((b) => b.addEventListener("click", () => setCfg({ capture_method: b.dataset.method })));
 $$("#unitChips button").forEach((b) => b.addEventListener("click", () => {
   setCfg({ bitrate_unit: b.dataset.unit });
   $("#customRate").value = "";
 }));
-$$("#formatChips button").forEach((b) => b.addEventListener("click", () => setCfg({ export_format: b.dataset.fmt })));
 $("#autostart").addEventListener("change", async (e) => {
   try { await invoke("set_autostart_cmd", { on: e.target.checked }); flash("Saved"); }
   catch (x) { e.target.checked = !e.target.checked; toast(String(x), true); }
@@ -898,7 +1081,7 @@ function addGame(exe, name) {
 async function refreshRunning() {
   const apps = await invoke("list_windows");
   $("#runningSel").innerHTML =
-    `<option value="">Add a running appâ€¦</option>` +
+    `<option value="">Add a running app…</option>` +
     apps.map((a) => `<option value="${esc(a.exe)}" data-title="${esc(a.title)}">${esc(a.exe)}, ${esc(a.title.slice(0, 50))}</option>`).join("");
 }
 $("#refreshRunning").addEventListener("click", refreshRunning);
@@ -912,63 +1095,84 @@ $("#addRunning").addEventListener("click", () => {
 $("#addManual").addEventListener("click", () => { addGame($("#manualExe").value); $("#manualExe").value = ""; });
 $("#manualExe").addEventListener("keydown", (e) => { if (e.key === "Enter") $("#addManual").click(); });
 
-// ---- hotkey capture
-const hk = $("#hotkey");
-let hkPrev = "";
-hk.addEventListener("focus", () => { hkPrev = S.cfg.hotkey; hk.value = "Press keysâ€¦"; hk.classList.add("listening"); });
-hk.addEventListener("blur", () => {
-  hk.classList.remove("listening");
-  if (hk.value === "Press keysâ€¦") hk.value = S.cfg.hotkey;
-});
-hk.addEventListener("keydown", (e) => {
-  e.preventDefault();
-  e.stopPropagation();
-  if (e.key === "Escape") { hk.value = hkPrev; hk.blur(); return; }
-  if (e.key === "Backspace") {
-    hk.value = hkPrev;
-    flash("A hotkey is needed to save clips", true);
-    hk.blur();
-    return;
-  }
-  if (["Control", "Alt", "Shift", "Meta"].includes(e.key)) return;
-  let key = e.code;
-  if (key.startsWith("Key")) key = key.slice(3);
-  else if (key.startsWith("Digit")) key = key.slice(5);
-  const combo = [e.ctrlKey && "Ctrl", e.altKey && "Alt", e.shiftKey && "Shift", e.metaKey && "Super", key].filter(Boolean).join("+");
-  hk.classList.remove("listening");
-  hk.value = combo;
-  hk.blur();
-  if (combo !== S.cfg.hotkey) {
-    S.cfg.hotkey = combo;
-    flush(); // a taken hotkey is reported (and reverted) straight away
-  }
-});
+// ---- shortcuts: click, then press the keys. The second one is optional (Backspace clears it).
+$("#hotkey2").placeholder = "Not set";
+function bindHotkey(el, key, optional) {
+  const other = () => (key === "hotkey" ? S.cfg.hotkey2 : S.cfg.hotkey) || "";
+  let prev = "";
+  el.addEventListener("focus", () => { prev = S.cfg[key] || ""; el.value = "Press keys…"; el.classList.add("listening"); });
+  el.addEventListener("blur", () => {
+    el.classList.remove("listening");
+    if (el.value === "Press keys…") el.value = S.cfg[key] || "";
+  });
+  el.addEventListener("keydown", (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (e.key === "Escape") { el.value = prev; el.blur(); return; }
+    if (e.key === "Backspace") {
+      el.value = prev;
+      el.blur();
+      if (!optional) { flash("The main shortcut can't be empty", true); return; }
+      if (prev) { S.cfg[key] = ""; flush(); }
+      return;
+    }
+    if (["Control", "Alt", "Shift", "Meta"].includes(e.key)) return;
+    let k = e.code;
+    if (k.startsWith("Key")) k = k.slice(3);
+    else if (k.startsWith("Digit")) k = k.slice(5);
+    const combo = [e.ctrlKey && "Ctrl", e.altKey && "Alt", e.shiftKey && "Shift", e.metaKey && "Super", k].filter(Boolean).join("+");
+    el.classList.remove("listening");
+    el.value = combo;
+    el.blur();
+    if (other() && combo.toLowerCase() === other().toLowerCase()) {
+      el.value = prev;
+      $("#hotkeyErr").textContent = "That's already your other shortcut. Pick a different one.";
+      $("#hotkeyErr").hidden = false;
+      return;
+    }
+    $("#hotkeyErr").hidden = true;
+    if (combo !== S.cfg[key]) {
+      S.cfg[key] = combo;
+      flush(); // a taken shortcut is reported (and reverted) straight away
+    }
+  });
+}
+bindHotkey($("#hotkey"), "hotkey", false);
+bindHotkey($("#hotkey2"), "hotkey2", true);
 
 // ---- ffmpeg
 let ffBusy = false;
-$("#getFfmpeg").addEventListener("click", async () => {
+async function downloadFfmpeg() {
+  if (ffBusy) return;
   ffBusy = true;
   $("#getFfmpeg").hidden = true;
-  $("#ffHint").textContent = "Downloading FFmpeg...";
-  const un = await listen("ffmpeg-download", (e) => {
-    $("#ffHint").textContent = `Downloading FFmpeg... ${(e.payload / 1048576).toFixed(0)} MB`;
-  });
+  $("#ffBannerBtn").hidden = true;
+  const say = (t) => { $("#ffHint").textContent = t; $("#ffBannerText").textContent = t; };
+  say("Downloading FFmpeg...");
+  const un = await listen("ffmpeg-download", (e) => say(`Downloading FFmpeg... ${(e.payload / 1048576).toFixed(0)} MB`));
   try {
     S.cfg.ffmpeg = await invoke("download_ffmpeg");
     $("#ffmpeg").value = S.cfg.ffmpeg;
+    toast("FFmpeg is ready");
   } catch (x) { toast(String(x), true); }
   un();
   ffBusy = false;
   renderFfHints();
-});
+}
+$("#getFfmpeg").addEventListener("click", downloadFfmpeg);
+$("#ffBannerBtn").addEventListener("click", downloadFfmpeg);
+
 async function renderFfHints() {
-  $("#ffHint").textContent = "Checking FFmpegâ€¦";
+  if (ffBusy) return;
   try {
     S.ff = await invoke("ffmpeg_info");
   } catch { S.ff = { ok: false }; }
   const f = S.ff;
-  $("#getFfmpeg").hidden = !!f.ok || ffBusy;
+  $("#getFfmpeg").hidden = !!f.ok;
+  $("#ffBanner").hidden = !!f.ok;
+  $("#ffBannerBtn").hidden = !!f.ok ? true : false;
   if (!f.ok) {
+    $("#ffBannerText").textContent = "FFmpeg isn't set up yet. Clipr needs it to record and export.";
     $("#ffHint").textContent = "FFmpeg wasn't found. Use the button above to download it, or enter the full path to ffmpeg.exe.";
     $("#encHint").textContent = "";
     return;
@@ -982,20 +1186,68 @@ async function renderFfHints() {
   renderEstimates();
 }
 
+// ---- storage: what the clips use, cleanup, live memory
+async function renderStorage() {
+  let s;
+  try { s = await invoke("storage_info"); } catch { return; }
+  $("#stCard").innerHTML =
+    `Raw clips <b>${fmtSize(s.raw_bytes)}</b> in ${plural(s.raw_count, "clip")}<br>` +
+    `Exported clips <b>${fmtSize(s.exports_bytes)}</b> in ${plural(s.exports_count, "clip")}`;
+  $("#cleanupBtn").disabled = !s.done_count;
+  $("#cleanupHint").textContent = s.done_count
+    ? `${plural(s.done_count, "raw clip")} (${fmtSize(s.done_bytes)}) already ${s.done_count === 1 ? "has" : "have"} a trimmed version. Your exported clips aren't touched.`
+    : "No raw clips have a trimmed version yet. Clipr remembers which ones you've exported.";
+}
+$("#openClips").addEventListener("click", () => invoke("open_clips_folder", { kind: "all" }).catch((e) => toast(e, true)));
+$("#cleanupBtn").addEventListener("click", async () => {
+  const s = await invoke("storage_info");
+  if (!s.done_count) return renderStorage();
+  const ok = await confirmDialog(
+    `Delete ${plural(s.done_count, "raw clip")}?`,
+    `These raw clips already have a trimmed version, and together they use ${fmtSize(s.done_bytes)}. Your exported clips stay. This can't be undone.`,
+    "Delete them"
+  );
+  if (!ok) return;
+  if (S.sel && S.selKind === "raw") closeClip(); // lets go of the open file
+  try {
+    const r = await invoke("delete_exported_raws");
+    toast(`Deleted ${plural(r.count, "raw clip")} and freed ${fmtSize(r.bytes)}`);
+  } catch (e) { toast(String(e), true); }
+  renderStorage();
+  loadClips();
+});
+
+let memTimer = null, memTick = 0;
+async function pollMem() {
+  try {
+    const m = await invoke("memory_info");
+    const st = S.status || {};
+    const usedPct = m.system_total ? Math.round((m.system_used / m.system_total) * 100) : 0;
+    $("#memCard").innerHTML =
+      `Clipr and ffmpeg use <b>${fmtSize(m.clipr_bytes)}</b>` +
+      (st.buffer_ram && st.buffer_bytes ? `, including a RAM buffer of <b>${fmtSize(st.buffer_bytes)}</b>` : "") + `.<br>` +
+      `Your PC: <b>${fmtSize(m.system_used)}</b> of ${fmtSize(m.system_total)} in use (${usedPct}%)`;
+    $("#memBar").style.width = usedPct + "%";
+  } catch {}
+  if (++memTick % 5 === 0) renderStorage(); // clips come and go while this screen is open
+}
+function startMemPoll() {
+  stopMemPoll();
+  memTick = 0;
+  pollMem();
+  memTimer = setInterval(() => { if (!document.hidden) pollMem(); }, 2000);
+}
+function stopMemPoll() { clearInterval(memTimer); memTimer = null; }
+
 // ---- advanced / about
 $("#openData").addEventListener("click", () => invoke("open_data_folder").catch((e) => toast(e, true)));
-let resetTimer = null;
-$("#resetAll").addEventListener("click", async (e) => {
-  const btn = e.currentTarget;
-  if (!btn.classList.contains("armed")) {
-    btn.classList.add("armed");
-    btn.textContent = "Click again to reset";
-    resetTimer = setTimeout(() => { btn.classList.remove("armed"); btn.textContent = "Reset all settings"; }, 3000);
-    return;
-  }
-  clearTimeout(resetTimer);
-  btn.classList.remove("armed");
-  btn.textContent = "Reset all settings";
+$("#resetAll").addEventListener("click", async () => {
+  const ok = await confirmDialog(
+    "Reset all settings?",
+    "Every setting goes back to its default, including your games list and shortcuts. Your clips and the FFmpeg and clips-folder paths are not touched.",
+    "Reset settings"
+  );
+  if (!ok) return;
   try {
     S.cfg = await invoke("reset_config");
     $("#autostart").checked = false;
@@ -1040,10 +1292,13 @@ $("#settingsScroll").addEventListener("scroll", spy);
   S.cfg = await invoke("get_config");
   try { S.monitors = await invoke("list_monitors"); } catch {}
   $("#menuHotkey").textContent = S.cfg.hotkey;
-  $("#emptySub").innerHTML = `Clips are saved with <kbd>${esc(S.cfg.hotkey)}</kbd>, or File â†’ Save clip now.`;
+  $("#emptySub").innerHTML = `Clips are saved with <kbd>${esc(S.cfg.hotkey)}</kbd>, or File → Save clip now.`;
+  $("#sortSel").value = S.sort;
+  $("#groupBy").checked = S.group;
   renderStatus(await invoke("get_status"));
   renderExport();
   await loadClips();
+  renderFfHints(); // shows the download strip if FFmpeg is missing
   try {
     const info = await invoke("app_info");
     if (info.config_broken) toast("Your settings file was damaged, so Clipr started with defaults. The old file is saved as config.broken.json.", true);
@@ -1056,6 +1311,14 @@ $("#settingsScroll").addEventListener("scroll", spy);
   });
   listen("clip-error", (e) => toast(String(e.payload), true));
   listen("export-progress", (e) => {
-    if (S.sel && e.payload.path === S.sel.path) $("#progressBar").style.width = Math.round(e.payload.pct * 100) + "%";
+    if (!S.sel || e.payload.path !== S.sel.path) return;
+    const p = e.payload.pct;
+    $("#progressBar").style.width = Math.round(p * 100) + "%";
+    const speed = e.payload.speed;
+    const parts = [`${Math.round(p * 100)}%`];
+    if (speed > 0) parts.push(`${speed >= 10 ? Math.round(speed) : speed.toFixed(1)}× speed`);
+    const elapsed = (Date.now() - S.expStart) / 1000;
+    if (p > 0.03 && p < 1) parts.push(`about ${fmtEta((elapsed * (1 - p)) / p)} left`);
+    $("#progressInfo").textContent = parts.join(" · ");
   });
 })();
