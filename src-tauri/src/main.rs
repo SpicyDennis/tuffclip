@@ -248,6 +248,26 @@ async fn ffmpeg_info(eng: Eng<'_>) -> Result<ff::FfInfo, String> {
     tauri::async_runtime::spawn_blocking(move || ff::info(&path)).await.map_err(e2s)
 }
 
+/// Download FFmpeg into Clipr's data folder and point the setting at it. Returns the new path.
+#[tauri::command]
+async fn download_ffmpeg(app: AppHandle, eng: Eng<'_>) -> Result<String, String> {
+    let dir = config::data_dir().join("ffmpeg");
+    let a = app.clone();
+    let path = tauri::async_runtime::spawn_blocking(move || {
+        ff::download(&dir, |bytes| {
+            let _ = a.emit("ffmpeg-download", bytes);
+        })
+    })
+    .await
+    .map_err(e2s)?
+    .map_err(|e| format!("{e:#}"))?;
+    let path = path.to_string_lossy().into_owned();
+    let mut cfg = eng.cfg.lock().clone();
+    cfg.ffmpeg = path.clone();
+    apply_config(&app, &eng, cfg)?;
+    Ok(path)
+}
+
 // ------------------------------------------------------------------- helpers
 
 fn set_hotkey(app: &AppHandle, hk: &str) -> Result<(), String> {
@@ -346,6 +366,7 @@ fn main() {
             save_clip_now,
             export_clip,
             ffmpeg_info,
+            download_ffmpeg,
         ])
         .setup(|app| {
             let cfg = Config::load();

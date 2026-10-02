@@ -890,14 +890,31 @@ hk.addEventListener("keydown", (e) => {
 });
 
 // ---- ffmpeg
+let ffBusy = false;
+$("#getFfmpeg").addEventListener("click", async () => {
+  ffBusy = true;
+  $("#getFfmpeg").hidden = true;
+  $("#ffHint").textContent = "Downloading FFmpeg...";
+  const un = await listen("ffmpeg-download", (e) => {
+    $("#ffHint").textContent = `Downloading FFmpeg... ${(e.payload / 1048576).toFixed(0)} MB`;
+  });
+  try {
+    S.cfg.ffmpeg = await invoke("download_ffmpeg");
+    $("#ffmpeg").value = S.cfg.ffmpeg;
+  } catch (x) { toast(String(x), true); }
+  un();
+  ffBusy = false;
+  renderFfHints();
+});
 async function renderFfHints() {
   $("#ffHint").textContent = "Checking FFmpegâ€¦";
   try {
     S.ff = await invoke("ffmpeg_info");
   } catch { S.ff = { ok: false }; }
   const f = S.ff;
+  $("#getFfmpeg").hidden = !!f.ok || ffBusy;
   if (!f.ok) {
-    $("#ffHint").textContent = "FFmpeg wasn't found. Install FFmpeg 8 or newer and enter the full path to ffmpeg.exe.";
+    $("#ffHint").textContent = "FFmpeg wasn't found. Download it below, or enter the full path to ffmpeg.exe.";
     $("#encHint").textContent = "";
     return;
   }
