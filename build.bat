@@ -46,12 +46,13 @@ echo.
 echo [3/%TOTAL%] Compiling Clipr ^(cargo tauri build^)...
 echo   First build: several minutes. Later builds: usually under a minute.
 echo   Watch the "Compiling ..." lines below. If they keep changing, it is working.
-echo   The final "Compiling clipr" step can sit silent for a minute or two while
-echo   the linker runs; that is normal.
+echo   The last step ^(the clipr crate: full optimisation + linking^) can sit on one
+echo   line for several minutes. A "still working" line with the elapsed time is
+echo   printed every 15 seconds while it runs, so you can tell it is not stuck.
 echo.
 call :now T1
 pushd "%ROOT%src-tauri"
-cargo tauri build --no-bundle
+powershell -nologo -noprofile -executionpolicy bypass -file "%ROOT%build-heartbeat.ps1" cargo tauri build --no-bundle
 if errorlevel 1 (
   popd
   echo.

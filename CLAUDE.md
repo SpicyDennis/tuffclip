@@ -15,7 +15,7 @@ For every batch of requested changes: load the **suite-design** skill first (UI 
 Run from `src-tauri/` unless noted:
 
 - Dev with live reload: `cargo tauri dev`
-- Release build: `build.bat` in the repo root (runs `cargo tauri build --no-bundle`, copies `target\release\clipr.exe` to `build\Clipr.exe`; it does not bundle ffmpeg, the app downloads it into the data dir on first run). Needs `cargo install tauri-cli --version "^2" --locked`.
+- Release build: `build.bat` in the repo root (runs `cargo tauri build --no-bundle`, copies `target\release\clipr.exe` to `build\Clipr.exe`; the cargo step goes through `build-heartbeat.ps1`, which prints "still working" every 15 s because the LTO link is silent for minutes; it does not bundle ffmpeg, the app downloads it into the data dir on first run). Needs `cargo install tauri-cli --version "^2" --locked`.
 - Type-check only: `cargo check`
 
 `README.md` notes the code was originally written without compiling on Windows, so expect occasional `windows`-crate (0.58) signature errors.
