@@ -10,8 +10,12 @@
 <body>
 <header class="topbar">
   <div class="brand"><span class="brand-mark" aria-hidden="true"></span>Clipr</div>
-  <div class="menubar">
-    <button class="menu-btn" data-menu="file-menu" aria-haspopup="true" aria-expanded="false">File</button>
+  <nav class="tabs" id="tabs" role="tablist">
+    <button class="menu-btn" id="tabFile" data-tab="file" data-menu="file-menu" aria-haspopup="true" aria-expanded="false">File</button>
+    <button class="tab" id="tabSettings" data-tab="settings" role="tab">Settings</button>
+    <button class="tab active" id="tabLibrary" data-tab="library" role="tab">Library</button>
+  </nav>
+  <div>
     <div class="menu" id="file-menu" role="menu" hidden>
       <button class="menu-item" data-action="save-clip">Save clip now<span class="shortcut" id="menuHotkey"></span></button>
       <button class="menu-item" data-action="open-folder">Open clips folder</button>
@@ -22,10 +26,6 @@
       <button class="menu-item" data-action="quit">Quit<span class="shortcut">Ctrl+Q</span></button>
     </div>
   </div>
-  <nav class="tabs" role="tablist">
-    <button class="tab active" id="tabLibrary" role="tab">Library</button>
-    <button class="tab" id="tabSettings" role="tab">Settings</button>
-  </nav>
   <div class="buf" id="buf" hidden></div>
   <div class="status" id="status" title="">
     <span class="tally" aria-hidden="true"></span><span id="statusText">Starting</span>

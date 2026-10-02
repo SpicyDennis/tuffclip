@@ -127,3 +127,8 @@
 .add-row { display: flex; gap: 8px; }
 .add-row select, .add-row input { flex: 1; }
 .about-name { font: 600 18px/1.3 var(--font-display); }
+
+/* draggable top-bar tabs */
+.tabs { margin-left: -8px; touch-action: none; user-select: none; }
+.tabs .tab, .tabs .menu-btn { cursor: grab; }
+.tabs .dragging { background: var(--raised); color: var(--text); cursor: grabbing; }

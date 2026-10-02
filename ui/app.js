@@ -81,6 +81,60 @@ $("#tabLibrary").addEventListener("click", () => showView("library"));
 $("#tabSettings").addEventListener("click", () => showView("settings"));
 $("#settingsBack").addEventListener("click", () => showView("library"));
 
+// ---- draggable top-bar tabs (File / Settings / Library); order is remembered
+(() => {
+  const bar = $("#tabs");
+  const KEY = "clipr.tabOrder";
+  const items = () => [...bar.children];
+  try {
+    const saved = JSON.parse(localStorage.getItem(KEY) || "[]");
+    saved.forEach((id) => { const el = bar.querySelector(`[data-tab="${id}"]`); if (el) bar.appendChild(el); });
+  } catch {}
+  const save = () => {
+    try { localStorage.setItem(KEY, JSON.stringify(items().map((el) => el.dataset.tab))); } catch {}
+  };
+
+  let drag = null, moved = false;
+  bar.addEventListener("pointerdown", (e) => {
+    const el = e.target.closest("[data-tab]");
+    if (!el || e.button !== 0) return;
+    drag = { el, x: e.clientX, active: false };
+  });
+  window.addEventListener("pointermove", (e) => {
+    if (!drag) return;
+    if (!drag.active) {
+      if (Math.abs(e.clientX - drag.x) < 6) return;
+      drag.active = true;
+      drag.el.classList.add("dragging");
+      document.body.style.cursor = "grabbing";
+    }
+    const others = items().filter((el) => el !== drag.el);
+    const next = others.find((el) => {
+      const r = el.getBoundingClientRect();
+      return e.clientX < r.left + r.width / 2;
+    });
+    if (next) { if (drag.el.nextElementSibling !== next) bar.insertBefore(drag.el, next); }
+    else if (bar.lastElementChild !== drag.el) bar.appendChild(drag.el);
+  });
+  const end = () => {
+    if (!drag) return;
+    if (drag.active) {
+      moved = true;
+      drag.el.classList.remove("dragging");
+      document.body.style.cursor = "";
+      save();
+      setTimeout(() => { moved = false; }, 0);
+    }
+    drag = null;
+  };
+  window.addEventListener("pointerup", end);
+  window.addEventListener("pointercancel", end);
+  // a drag must not also count as a click (would switch tab / open File menu)
+  window.addEventListener("click", (e) => {
+    if (moved && e.target.closest("#tabs")) { e.stopPropagation(); e.preventDefault(); }
+  }, true);
+})();
+
 document.addEventListener("menu-action", (e) => {
   switch (e.detail) {
     case "save-clip": invoke("save_clip_now").catch(() => {}); break;
