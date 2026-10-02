@@ -1,0 +1,129 @@
+/* Clipr-specific rules. The shared look lives in theme.css (don't edit it per app). */
+
+/* ---------------------------------------------------------------- top bar extras */
+.buf {
+  margin-left: auto;
+  color: var(--muted); font-size: 13px; font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.buf b { color: var(--text); font-weight: 600; }
+.buf + .status { margin-left: 0; }
+.warn { color: var(--tally); font-size: 13px; max-width: 40ch; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* ---------------------------------------------------------------- library */
+.sidebar .seg { display: flex; }
+.filters { display: flex; gap: 8px; }
+.filters select { flex: 1; }
+.item .g { color: var(--muted); font-size: 12px; }
+
+.player { display: flex; flex-direction: column; gap: 16px; max-width: 1100px; margin: 0 auto; }
+.video-wrap { background: #000; border-radius: var(--radius-lg); overflow: hidden; aspect-ratio: 16 / 9; }
+.video-wrap video { width: 100%; height: 100%; display: block; }
+
+.clip-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; }
+.clip-id { min-width: 0; flex: 1; }
+.clip-title {
+  width: 100%;
+  font: 600 18px/1.3 var(--font-display);
+  background: transparent; border: 1px solid transparent; border-radius: var(--radius);
+  padding: 2px 6px; margin-left: -7px;
+  user-select: text;
+}
+.clip-title:hover { border-color: var(--line); }
+.clip-title:focus { background: var(--bg); border-color: var(--tally); }
+.clip-id .meta { margin-left: -1px; }
+
+/* trim timeline */
+.trim { display: flex; flex-direction: column; gap: 10px; }
+.timeline {
+  position: relative;
+  height: 46px;
+  border-radius: var(--radius);
+  cursor: pointer;
+  touch-action: none;
+  background:
+    repeating-linear-gradient(90deg, transparent 0 11px, rgba(255,255,255,0.05) 11px 12px),
+    var(--panel);
+  border: 1px solid var(--line);
+}
+.tl-shade { position: absolute; top: 0; bottom: 0; background: rgba(10, 13, 17, 0.6); pointer-events: none; }
+#shadeL { left: 0; }
+#shadeR { right: 0; }
+.tl-sel {
+  position: absolute; top: -1px; bottom: -1px;
+  border-top: 3px solid var(--tally);
+  border-bottom: 3px solid var(--tally);
+  background: var(--tally-wash);
+  pointer-events: none;
+}
+.tl-handle {
+  position: absolute; top: -1px; bottom: -1px; width: 14px;
+  background: var(--tally);
+  cursor: ew-resize;
+  z-index: 2;
+}
+.tl-handle.start { border-radius: 4px 0 0 4px; transform: translateX(-100%); }
+.tl-handle.end { border-radius: 0 4px 4px 0; }
+.tl-handle::after {
+  content: ""; position: absolute; top: 50%; left: 50%;
+  width: 2px; height: 16px; margin: -8px 0 0 -1px;
+  background: var(--tally-ink); opacity: 0.55; border-radius: 1px;
+}
+.tl-head {
+  position: absolute; top: -5px; bottom: -5px; width: 2px; margin-left: -1px;
+  background: #fff; pointer-events: none; z-index: 3;
+  box-shadow: 0 0 0 1px rgba(0,0,0,0.4);
+}
+.trim-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.tc-group { display: flex; align-items: baseline; gap: 8px; }
+.tc { font: 600 16px/1 var(--font-display); font-variant-numeric: tabular-nums; }
+.tc-sep, .tc-len { color: var(--muted); }
+
+/* export */
+.export {
+  border-top: 1px solid var(--line);
+  padding-top: 16px;
+  display: flex; flex-direction: column; gap: 12px;
+}
+.size-row { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+.size-row > .label { min-width: 68px; }
+.chips .custom { display: flex; align-items: center; gap: 6px; color: var(--muted); }
+.chips .custom input { width: 92px; border-radius: 999px; padding: 5px 11px; }
+.chips .custom input.active { border-color: var(--tally); color: var(--text); }
+.chips .custom input.bad { border-color: var(--danger); }
+.export-row { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+.export-row .name { flex: 1; min-width: 180px; max-width: 340px; user-select: text; }
+.inline { display: flex; align-items: center; gap: 8px; color: var(--muted); }
+.inline select { color: var(--text); }
+.est { color: var(--muted); font-size: 13px; font-variant-numeric: tabular-nums; }
+.est b { color: var(--text); font-weight: 600; }
+.export .hint { max-width: none; }
+
+/* ---------------------------------------------------------------- settings extras */
+#savedMsg { margin-left: auto; font-size: 13px; opacity: 0; transition: opacity 0.2s; }
+#savedMsg.show { opacity: 1; }
+#savedMsg.err { color: var(--danger); }
+.settings { padding-bottom: 60px; }
+.card {
+  background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius);
+  padding: 10px 12px; color: var(--muted); font-variant-numeric: tabular-nums;
+}
+.card b { color: var(--text); font-weight: 600; }
+.mono { font-family: Consolas, "Cascadia Mono", monospace; font-size: 13px; user-select: text; }
+
+.hotkey { cursor: pointer; font-weight: 600; max-width: 260px; }
+.hotkey.listening { border-color: var(--tally); color: var(--tally); }
+.keys { display: grid; grid-template-columns: 1fr auto; gap: 8px 18px; align-items: center; max-width: 520px; }
+
+.game-list { display: flex; flex-direction: column; gap: 6px; }
+.game {
+  display: grid; grid-template-columns: auto 1fr 1fr auto; gap: 10px; align-items: center;
+  background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 6px 8px;
+}
+.game .exe { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.game input[type=checkbox] { width: 15px; height: 15px; }
+.game.off .name, .game.off .exe { opacity: 0.5; }
+.games-empty { color: var(--muted); }
+.add-row { display: flex; gap: 8px; }
+.add-row select, .add-row input { flex: 1; }
+.about-name { font: 600 18px/1.3 var(--font-display); }

@@ -1,0 +1,385 @@
+﻿<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Clipr</title>
+<link rel="stylesheet" href="theme.css" />
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+<header class="topbar">
+  <div class="brand"><span class="brand-mark" aria-hidden="true"></span>Clipr</div>
+  <div class="menubar">
+    <button class="menu-btn" data-menu="file-menu" aria-haspopup="true" aria-expanded="false">File</button>
+    <div class="menu" id="file-menu" role="menu" hidden>
+      <button class="menu-item" data-action="save-clip">Save clip now<span class="shortcut" id="menuHotkey"></span></button>
+      <button class="menu-item" data-action="open-folder">Open clips folder</button>
+      <div class="menu-sep"></div>
+      <button class="menu-item" data-action="settings">Settingsâ€¦<span class="shortcut">Ctrl+,</span></button>
+      <button class="menu-item" data-action="data-folder">Open data folder</button>
+      <div class="menu-sep"></div>
+      <button class="menu-item" data-action="hide">Hide to tray<span class="shortcut">Esc</span></button>
+      <button class="menu-item" data-action="quit">Quit<span class="shortcut">Ctrl+Q</span></button>
+    </div>
+  </div>
+  <nav class="tabs" role="tablist">
+    <button class="tab active" id="tabLibrary" role="tab">Library</button>
+  </nav>
+  <div class="buf" id="buf" hidden></div>
+  <div class="status" id="status" title="">
+    <span class="tally" aria-hidden="true"></span><span id="statusText">Starting</span>
+  </div>
+</header>
+
+<main>
+  <!-- ============================== LIBRARY -->
+  <section class="view" id="view-library">
+    <aside class="sidebar">
+      <div class="seg" id="kindSeg">
+        <button class="active" data-kind="raw">Raw clips</button>
+        <button data-kind="exports">Exported</button>
+      </div>
+      <div class="filters">
+        <select id="gameFilter" aria-label="Filter by game"><option value="all">All games</option></select>
+        <select id="sortSel" aria-label="Sort">
+          <option value="new">Newest first</option>
+          <option value="old">Oldest first</option>
+          <option value="game">Group by game</option>
+          <option value="size">Largest first</option>
+        </select>
+      </div>
+      <div class="list" id="clipList"></div>
+      <div class="list-foot">
+        <span id="clipCount"></span>
+        <button class="link" id="openFolder">Open folder</button>
+      </div>
+    </aside>
+
+    <section class="stage">
+      <div class="empty" id="emptyStage">
+        <p class="empty-title">Pick a clip to watch and trim it.</p>
+        <p class="empty-sub" id="emptySub"></p>
+      </div>
+
+      <div class="player" id="player" hidden>
+        <div class="video-wrap"><video id="video" controls preload="metadata"></video></div>
+
+        <div class="clip-head">
+          <div class="clip-id">
+            <input class="clip-title" id="clipTitle" spellcheck="false" aria-label="Clip name" title="Click to rename this clip" />
+            <div class="meta" id="clipMeta"></div>
+          </div>
+          <div class="row">
+            <button class="btn ghost" id="revealBtn">Show in folder</button>
+            <button class="btn ghost danger" id="deleteBtn">Delete</button>
+          </div>
+        </div>
+
+        <div class="trim">
+          <div class="timeline" id="timeline" aria-label="Trim range">
+            <div class="tl-shade" id="shadeL"></div>
+            <div class="tl-shade" id="shadeR"></div>
+            <div class="tl-sel" id="tlSel"></div>
+            <div class="tl-handle start" data-h="start" id="hStart" tabindex="0" aria-label="Trim start"></div>
+            <div class="tl-handle end" data-h="end" id="hEnd" tabindex="0" aria-label="Trim end"></div>
+            <div class="tl-head" id="tlHead"></div>
+          </div>
+          <div class="trim-row">
+            <button class="btn sm" id="setStart">Set start here <kbd>I</kbd></button>
+            <div class="tc-group">
+              <span class="tc" id="tcStart">0:00.0</span>
+              <span class="tc-sep">to</span>
+              <span class="tc" id="tcEnd">0:00.0</span>
+              <span class="tc-len" id="tcLen"></span>
+            </div>
+            <button class="btn sm" id="setEnd">Set end here <kbd>O</kbd></button>
+            <div class="grow"></div>
+            <button class="btn sm ghost" id="previewSel">Play selection</button>
+            <button class="btn sm ghost" id="resetTrim">Reset</button>
+          </div>
+        </div>
+
+        <div class="export">
+          <div class="size-row">
+            <span class="label">Export</span>
+            <div class="seg" id="modeSeg">
+              <button class="active" data-mode="original">Original quality</button>
+              <button data-mode="size">By file size</button>
+              <button data-mode="bitrate">By bitrate</button>
+            </div>
+          </div>
+          <div class="size-row" id="sizeRow" hidden>
+            <span class="label">File size</span>
+            <div class="chips" id="sizeChips"></div>
+            <div class="chips"><label class="custom"><input type="number" id="customMb" min="1" step="1" placeholder="Custom"> MB</label></div>
+          </div>
+          <div class="size-row" id="rateRow" hidden>
+            <span class="label">Bitrate</span>
+            <div class="chips" id="rateChips"></div>
+            <div class="chips"><label class="custom"><input type="number" id="customRate" min="0" placeholder="Custom"> <span id="customRateUnit"></span></label></div>
+          </div>
+          <p class="hint err" id="capHint" hidden></p>
+          <p class="hint" id="modeHint"></p>
+          <div class="export-row">
+            <label class="inline">Name <input class="name" id="expName" spellcheck="false" aria-label="Exported file name"></label>
+            <label class="inline">Format
+              <select id="expFormat">
+                <option value="mp4">MP4</option>
+                <option value="mkv">MKV</option>
+                <option value="mov">MOV</option>
+                <option value="webm">WebM</option>
+              </select>
+            </label>
+            <label class="inline">Resolution
+              <select id="expRes">
+                <option value="-1">Auto</option>
+                <option value="0">Same as clip</option>
+                <option value="1080">1080p</option>
+                <option value="720">720p</option>
+                <option value="480">480p</option>
+              </select>
+            </label>
+            <label class="check"><input type="checkbox" id="expPrecise"> Exact size (slower)</label>
+          </div>
+          <div class="export-row">
+            <div class="grow"></div>
+            <span class="est" id="estimate"></span>
+            <button class="btn primary" id="exportBtn">Export</button>
+          </div>
+          <div class="progress" id="progress" hidden><div class="bar" id="progressBar"></div></div>
+        </div>
+      </div>
+    </section>
+  </section>
+
+  <!-- ============================== SETTINGS -->
+  <section class="view settings-view" id="view-settings" hidden>
+    <nav class="settings-nav" id="settingsNav">
+      <button class="item active" data-group="general">General</button>
+      <button class="item" data-group="capture">Capture</button>
+      <button class="item" data-group="video">Video</button>
+      <button class="item" data-group="audio">Audio</button>
+      <button class="item" data-group="export">Export</button>
+      <button class="item" data-group="storage">Storage</button>
+      <button class="item" data-group="shortcuts">Shortcuts</button>
+      <button class="item" data-group="advanced">Advanced</button>
+      <button class="item" data-group="about">About</button>
+    </nav>
+    <div class="settings" id="settingsScroll">
+      <div class="settings-head">
+        <button class="link" id="settingsBack">â† Back</button>
+        <h2>Settings</h2>
+        <span class="label" id="savedMsg" aria-live="polite">Saved</span>
+      </div>
+
+      <section class="group" id="g-general">
+        <h3>General</h3>
+        <p class="hint">How Clipr starts and what it tells you. Changes save as you make them.</p>
+        <div class="field">
+          <label class="check"><input type="checkbox" id="autostart"> Start with Windows</label>
+          <p class="hint">Opens hidden in the tray when you sign in.</p>
+        </div>
+        <div class="field">
+          <label class="check"><input type="checkbox" id="startHidden"> Start hidden in the tray</label>
+          <p class="hint">Recording runs in the background without opening this window.</p>
+        </div>
+        <div class="field">
+          <label class="check"><input type="checkbox" id="beep"> Beep when a clip is saved</label>
+          <p class="hint">You also get a different sound if a clip couldn't be saved.</p>
+        </div>
+        <div class="field">
+          <label>Show bitrates in</label>
+          <div class="chips" id="unitChips">
+            <button data-unit="mbps">Megabits (Mbps)</button>
+            <button data-unit="kbps">Kilobits (kbps)</button>
+          </div>
+          <p class="hint">Applies everywhere in Clipr, including the numbers you type.</p>
+        </div>
+      </section>
+
+      <section class="group" id="g-capture">
+        <h3>Capture</h3>
+        <p class="hint">What gets recorded, and when.</p>
+        <div class="field">
+          <div class="seg wide" id="captureSeg">
+            <button data-mode="games">Only my games</button>
+            <button data-mode="desktop">Always record a monitor</button>
+          </div>
+          <p class="hint" id="modeHint2"></p>
+        </div>
+        <div class="field" id="monitorField">
+          <label for="monitorSel">Monitor</label>
+          <select id="monitorSel"></select>
+        </div>
+        <div class="field">
+          <label class="check"><input type="checkbox" id="drawMouse"> Show the mouse cursor</label>
+        </div>
+        <div class="field">
+          <label>Games</label>
+          <p class="hint">Recording starts when one of these is in focus and stops when it closes. A game that isn't fullscreen is recorded at the size of its window. Clips are filed under the name you give it.</p>
+          <div id="gameList" class="game-list"></div>
+          <div class="add-row">
+            <select id="runningSel" aria-label="Running apps"><option value="">Add a running appâ€¦</option></select>
+            <button class="btn sm ghost" id="refreshRunning" title="Refresh list">Refresh</button>
+            <button class="btn sm" id="addRunning">Add</button>
+          </div>
+          <div class="add-row">
+            <input id="manualExe" placeholder="Or type the exe name, like cs2.exe">
+            <button class="btn sm" id="addManual">Add</button>
+          </div>
+        </div>
+      </section>
+
+      <section class="group" id="g-video">
+        <h3>Video</h3>
+        <p class="hint">Quality of what's buffered. Higher costs more GPU and disk or RAM.</p>
+        <div class="grid">
+          <div class="field">
+            <label for="height">Resolution</label>
+            <select id="height">
+              <option value="0">Native</option>
+              <option value="1440">1440p</option>
+              <option value="1080">1080p</option>
+              <option value="720">720p</option>
+            </select>
+            <p class="hint" id="scaleHint"></p>
+          </div>
+          <div class="field">
+            <label for="fps">Frame rate</label>
+            <select id="fps"></select>
+            <p class="hint" id="fpsHint"></p>
+          </div>
+          <div class="field">
+            <label for="bitrate" id="bitrateLabel">Bitrate</label>
+            <div class="row"><input type="number" id="bitrate" class="grow"><span class="unit" id="bitrateUnit"></span></div>
+            <p class="hint" id="bitrateHint"></p>
+          </div>
+          <div class="field">
+            <label for="clipSeconds">Clip length</label>
+            <div class="row"><input type="number" id="clipSeconds" min="5" max="600" step="5" class="grow"><span class="unit">seconds</span></div>
+          </div>
+          <div class="field">
+            <label for="encoder">Encoder (your GPU)</label>
+            <select id="encoder">
+              <option value="nvenc">NVIDIA</option>
+              <option value="amf">AMD</option>
+              <option value="qsv">Intel</option>
+            </select>
+            <p class="hint" id="encHint"></p>
+          </div>
+          <div class="field">
+            <label for="codec">Format</label>
+            <select id="codec">
+              <option value="h264">H.264, plays everywhere</option>
+              <option value="hevc">HEVC, smaller files</option>
+            </select>
+          </div>
+        </div>
+        <div class="field">
+          <label>Estimate</label>
+          <div class="card" id="clipEstimate"></div>
+        </div>
+      </section>
+
+      <section class="group" id="g-audio">
+        <h3>Audio</h3>
+        <p class="hint">Sound that goes into your clips.</p>
+        <div class="field">
+          <label class="check"><input type="checkbox" id="audio"> Record what you hear (system audio)</label>
+        </div>
+        <div class="grid">
+          <div class="field">
+            <label for="audioKbps">Audio bitrate</label>
+            <div class="row"><input type="number" id="audioKbps" min="64" max="320" step="32" class="grow"><span class="unit">kbps</span></div>
+          </div>
+          <div class="field">
+            <label for="audioOffset">Audio delay</label>
+            <div class="row"><input type="number" id="audioOffset" step="10" class="grow"><span class="unit">ms</span></div>
+            <p class="hint">Use if sound is ahead of or behind the picture.</p>
+          </div>
+        </div>
+      </section>
+
+      <section class="group" id="g-export">
+        <h3>Export</h3>
+        <p class="hint">What trimmed clips are saved as, and how hard exporting works your PC.</p>
+        <div class="field">
+          <label>File type</label>
+          <div class="chips" id="formatChips">
+            <button data-fmt="mp4">MP4</button>
+            <button data-fmt="mkv">MKV</button>
+            <button data-fmt="mov">MOV</button>
+            <button data-fmt="webm">WebM</button>
+          </div>
+          <p class="hint" id="formatHint"></p>
+        </div>
+        <div class="field">
+          <label class="check"><input type="checkbox" id="exportGentle"> Go easy on my PC while a game is recording</label>
+          <p class="hint">Exports run at low priority and take longer instead of costing you frames.</p>
+        </div>
+      </section>
+
+      <section class="group" id="g-storage">
+        <h3>Storage</h3>
+        <p class="hint">Where clips and the rolling buffer live.</p>
+        <div class="field">
+          <label for="clipsDir">Clips folder</label>
+          <input id="clipsDir">
+        </div>
+        <div class="field">
+          <label class="check"><input type="checkbox" id="bufferRam"> Keep the buffer in RAM</label>
+          <p class="hint" id="ramHint"></p>
+        </div>
+        <div class="field" id="bufferDirField">
+          <label for="bufferDir">Buffer folder</label>
+          <input id="bufferDir" placeholder="Leave empty for the default">
+          <p class="hint">Where the rolling recording lives on disk. A RAM disk here also means zero SSD writes.</p>
+        </div>
+      </section>
+
+      <section class="group" id="g-shortcuts">
+        <h3>Shortcuts</h3>
+        <p class="hint">Click a shortcut, then press the keys you want. Esc cancels, Backspace clears.</p>
+        <div class="keys">
+          <span>Save the last clip</span>
+          <input id="hotkey" class="hotkey" readonly>
+        </div>
+        <p class="hint err" id="hotkeyErr" hidden></p>
+      </section>
+
+      <section class="group" id="g-advanced">
+        <h3>Advanced</h3>
+        <p class="hint">Tools and files Clipr depends on.</p>
+        <div class="field">
+          <label for="ffmpeg">FFmpeg location</label>
+          <input id="ffmpeg">
+          <p class="hint" id="ffHint">Checking FFmpegâ€¦</p>
+        </div>
+        <div class="row">
+          <button class="btn" id="openData">Open data folder</button>
+        </div>
+        <div class="field">
+          <button class="btn danger" id="resetAll" style="align-self:flex-start">Reset all settings</button>
+          <p class="hint">Puts every setting back to its default. Your files are not touched.</p>
+        </div>
+      </section>
+
+      <section class="group" id="g-about">
+        <h3>About</h3>
+        <div class="about-name" id="aboutName">Clipr</div>
+        <p class="hint" id="aboutBuild"></p>
+        <div class="row">
+          <span class="mono grow" id="dataPath"></span>
+          <button class="btn sm ghost" id="copyPath">Copy</button>
+        </div>
+      </section>
+    </div>
+  </section>
+</main>
+
+<div class="toasts" id="toasts" aria-live="polite"></div>
+<script src="menu.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
