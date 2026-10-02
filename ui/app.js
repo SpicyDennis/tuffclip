@@ -777,6 +777,7 @@ $("#exportBtn").addEventListener("click", async () => {
     toast(`${isPng() ? "Saved" : "Exported"} ${baseName(out)}`);
     S.nameTouched = false;
     loadClips(); // the raw clip now shows as exported
+    invoke("reveal_clip", { path: out }).catch(() => {});
   } catch (e) {
     toast(String(e), true);
   } finally {
@@ -914,13 +915,15 @@ function renderFps() {
   const hz = monitorHz();
   const opts = [[0, hz ? `${hz} fps (display)` : "Match my display"]];
   const list = [30, 60, 120, 144, 165, 240];
+  if (hz && !list.includes(hz)) list.push(hz);
   if (S.cfg.fps && !list.includes(S.cfg.fps)) list.push(S.cfg.fps);
-  list.sort((a, b) => a - b).forEach((f) => opts.push([f, `${f} fps`]));
-  $$("#fps, #qFps").forEach((el) => fillSelect(el, opts, S.cfg.fps));
+  list.sort((a, b) => a - b).filter((f) => !hz || f <= hz).forEach((f) => opts.push([f, `${f} fps`]));
+  const cur = hz && S.cfg.fps > hz ? hz : S.cfg.fps;
+  $$("#fps, #qFps").forEach((el) => fillSelect(el, opts, cur));
   $("#fpsHint").textContent = !S.cfg.fps
     ? "Follows your display's refresh rate."
     : hz && S.cfg.fps > hz
-      ? `Your display only runs at ${hz} Hz, so the extra frames would be copies.`
+      ? `Your display only runs at ${hz} Hz, so recording is capped there.`
       : "";
 }
 

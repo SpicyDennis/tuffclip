@@ -77,7 +77,8 @@ impl RecordSpec {
         let fps = if cfg.fps == 0 {
             if m.refresh_hz > 0 { m.refresh_hz.clamp(24, 240) } else { 60 }
         } else {
-            cfg.fps
+            // Never faster than the display: the extra frames would only be copies.
+            if m.refresh_hz > 0 { cfg.fps.min(m.refresh_hz) } else { cfg.fps }
         };
         let mut spec = RecordSpec {
             adapter: m.adapter,
