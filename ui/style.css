@@ -29,6 +29,7 @@
   padding: 8px 18px; background: var(--panel); border-bottom: 1px solid var(--line);
   color: var(--tally);
 }
+.upd-hint { align-self: center; }
 
 /* ---------------------------------------------------------------- library */
 .sidebar .seg { display: flex; }

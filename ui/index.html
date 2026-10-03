@@ -37,6 +37,11 @@
   <span id="ffBannerText">FFmpeg isn't set up yet. TUFFClip needs it to record and export.</span>
   <button class="btn sm" id="ffBannerBtn">Download FFmpeg</button>
 </div>
+<div class="banner" id="updBanner" hidden>
+  <span id="updBannerText"></span>
+  <button class="btn sm" id="updBannerBtn">Update</button>
+  <button class="btn sm ghost" id="updBannerLater">Not now</button>
+</div>
 
 <main>
   <!-- ============================== LIBRARY -->
@@ -469,6 +474,15 @@
           <span class="mono grow" id="dataPath"></span>
           <button class="btn sm ghost" id="copyPath">Copy</button>
         </div>
+        <div class="field">
+          <label class="check"><input type="checkbox" id="checkUpdates"> Check for updates</label>
+          <p class="hint">Once a day, the first time you open TUFFClip, it asks GitHub whether there's a newer version. Nothing is installed until you click Update. Off: TUFFClip never goes online to look.</p>
+        </div>
+        <div class="row" id="updRow" hidden>
+          <button class="btn sm" id="updCheckNow">Check now</button>
+          <button class="btn sm" id="updInstall" hidden>Update</button>
+          <span class="hint upd-hint" id="updHint"></span>
+        </div>
       </section>
     </div>
   </section>
@@ -500,6 +514,16 @@
   <div class="dlg-head"><h3>Hidden programs</h3><button class="btn sm ghost" data-close>Close</button></div>
   <input type="search" class="dlg-search" id="ignoredSearch" placeholder="Search hidden programs" aria-label="Search hidden programs">
   <div id="ignoredList" class="game-list dlg-scroll"></div>
+</dialog>
+<dialog class="dialog" id="updDlg">
+  <form method="dialog">
+    <h3 id="updDlgTitle"></h3>
+    <p class="hint" id="updDlgBody"></p>
+    <div class="dialog-actions">
+      <button class="btn ghost" value="cancel" autofocus>Cancel</button>
+      <button class="btn primary" value="ok">Update and restart</button>
+    </div>
+  </form>
 </dialog>
 <dialog class="dialog" id="confirm">
   <form method="dialog">
