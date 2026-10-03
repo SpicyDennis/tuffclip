@@ -82,6 +82,17 @@ Close OBS or any other app using the card first: Windows lets only one program u
 
 TUFFClip remembers which raw clips you've exported; Settings > Storage can delete the ones that already have a trimmed version.
 
+### Benchmark
+
+The **Benchmark** tab measures what recording costs your game. Click *Start test*, switch to the game and keep the scene steady; TUFFClip switches recording on and off in rounds (2, 4 or 8 minutes in total), skipping the seconds right after each switch and any time the game isn't in front. The dot flashes when it starts and ends. The result compares on and off, with a range for how much the scene itself varied, so a difference smaller than that is reported as "no measurable difference".
+
+| Access | What it measures |
+|---|---|
+| Basic (no admin) | GPU load (the counters Task Manager reads), the game's share of the GPU, the video encoder, CPU load. Estimates the frame cost: a GPU with room to spare loses no frames; a maxed-out one loses about the share recording took. |
+| Full | Also the game's real frames (average FPS and 1% lows), read from Windows' DXGI/D3D9 frame events like PresentMon. This needs admin rights or membership of the *Performance Log Users* group; without them Windows shows a UAC prompt each test, and only a small helper process runs as admin until the test ends. Vulkan/OpenGL games that don't present through DXGI fall back to the Basic readings. |
+
+The replay buffer is emptied when the test starts. The last 8 results are kept in the tab for comparing settings.
+
 ## Tuning
 
 - **Zero SSD writes:** set the buffer folder to a RAM disk (e.g. ImDisk). At 30 Mbps the buffer is about 4 MB/s and only ~(clip length + 6 s) of video.
@@ -107,6 +118,8 @@ src-tauri/src/
   audio.rs     WASAPI capture per track (game / Discord / desktop / mic) -> one paced multichannel f32 stream to ffmpeg stdin
   sound.rs     a clip's tracks for the viewer: decoded .flac copies + waveforms
   export.rs    trim / codec / target-size export with progress
+  bench.rs     recording benchmark: on/off rounds, GPU/CPU counters, results
+  etw.rs       the benchmark's frame counter (`--bench-helper`, DXGI/D3D9 Present events)
   library.rs   lists clips by game folder, remembers which raws were exported, storage totals
   win.rs       DXGI monitors, game windows, memory info, job object
   config.rs    settings (JSON)

@@ -416,6 +416,10 @@ impl Recorder {
         self.child.as_ref().map(|c| c.as_raw_handle() as isize)
     }
 
+    pub fn child_pid(&self) -> Option<u32> {
+        self.child.as_ref().map(|c| c.id())
+    }
+
     /// Stop ffmpeg but hand back what the buffer holds, so a clip can still be saved afterwards.
     /// Returns None if nothing was running or the buffer is empty.
     pub fn stop_and_keep(&mut self) -> Option<Kept> {

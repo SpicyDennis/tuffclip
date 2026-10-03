@@ -1,8 +1,10 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod audio;
+mod bench;
 mod config;
 mod engine;
+mod etw;
 mod export;
 mod ff;
 mod library;
@@ -218,6 +220,23 @@ fn get_status(eng: Eng<'_>) -> Status {
 #[tauri::command]
 fn set_target(eng: Eng<'_>, exe: Option<String>) {
     eng.set_target(exe.filter(|e| !e.is_empty()));
+}
+
+/// Start a recording benchmark (runs in the background; progress comes as events).
+#[tauri::command]
+fn bench_start(app: AppHandle, eng: Eng<'_>, req: bench::BenchRequest) -> Result<(), String> {
+    bench::start(app, eng.inner().clone(), req)
+}
+
+#[tauri::command]
+fn bench_cancel() {
+    bench::cancel();
+}
+
+/// Whether a test is running, its progress, and the last result (for a window opened mid-test).
+#[tauri::command]
+fn bench_state() -> bench::Snapshot {
+    bench::snapshot()
 }
 
 #[tauri::command]
@@ -566,11 +585,69 @@ pub(crate) fn show_main(app: &AppHandle) {
                 .title("TUFFClip")
                 .inner_size(1240.0, 780.0)
                 .min_inner_size(960.0, 600.0)
+                .center()
                 .build();
-            if built.is_ok() {
+            if let Ok(w) = built {
+                restore_geometry(&w);
                 return;
             }
             std::thread::sleep(std::time::Duration::from_millis(300));
+        }
+    });
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct Geometry {
+    x: i32,
+    y: i32,
+    w: u32,
+    h: u32,
+}
+
+fn geometry_path() -> std::path::PathBuf {
+    config::data_dir().join("window.json")
+}
+
+/// Put the main window back where it was last time (it opens centred the first time, or when
+/// the saved spot is no longer on any screen).
+fn restore_geometry(w: &tauri::WebviewWindow) {
+    let Some(g) = std::fs::read_to_string(geometry_path()).ok().and_then(|t| serde_json::from_str::<Geometry>(&t).ok()) else { return };
+    let (cx, cy) = (g.x + (g.w / 2) as i32, g.y + 40);
+    let on_screen = w.available_monitors().unwrap_or_default().iter().any(|m| {
+        let (p, s) = (m.position(), m.size());
+        cx >= p.x && cx < p.x + s.width as i32 && cy >= p.y && cy < p.y + s.height as i32
+    });
+    if !on_screen || g.w < 400 || g.h < 300 {
+        return;
+    }
+    let _ = w.set_size(tauri::PhysicalSize::new(g.w, g.h));
+    let _ = w.set_position(tauri::PhysicalPosition::new(g.x, g.y));
+}
+
+fn save_geometry(w: &tauri::Window) {
+    if w.is_minimized().unwrap_or(true) || w.is_maximized().unwrap_or(false) {
+        return;
+    }
+    if let (Ok(p), Ok(s)) = (w.outer_position(), w.outer_size()) {
+        if s.width > 0 && s.height > 0 {
+            let g = Geometry { x: p.x, y: p.y, w: s.width, h: s.height };
+            if let Ok(t) = serde_json::to_string(&g) {
+                let _ = std::fs::write(geometry_path(), t);
+            }
+        }
+    }
+}
+
+/// Save the window's spot shortly after it stops moving or resizing.
+fn save_geometry_soon(w: &tauri::Window) {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static GEN: AtomicU64 = AtomicU64::new(0);
+    let id = GEN.fetch_add(1, Ordering::SeqCst) + 1;
+    let w = w.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(600));
+        if GEN.load(Ordering::SeqCst) == id {
+            save_geometry(&w);
         }
     });
 }
@@ -757,6 +834,11 @@ fn start_self_heal(app: AppHandle) {
 }
 
 fn main() {
+    // The benchmark's admin helper (started through UAC): count frames, then exit. No window, no tray.
+    let args: Vec<String> = std::env::args().collect();
+    if let Some(i) = args.iter().position(|a| a == "--bench-helper") {
+        std::process::exit(etw::helper_main(&args[i + 1..]));
+    }
     let updated = std::env::args().any(|a| a == "--updated");
     if updated {
         update::wait_for_old();
@@ -795,13 +877,16 @@ fn main() {
             let Some(eng) = app.try_state::<Arc<Engine>>() else { return };
             match event {
                 // X: hide to the tray (the default), or quit if the setting says so.
+                WindowEvent::Moved(_) => save_geometry_soon(window),
                 WindowEvent::CloseRequested { .. } => {
+                    save_geometry(window);
                     if !eng.cfg.lock().close_to_tray {
                         app.exit(0);
                     }
                 }
                 WindowEvent::Destroyed => preview::stop(),
                 WindowEvent::Resized(_) => {
+                    save_geometry_soon(window);
                     if eng.cfg.lock().minimize_to_tray && window.is_minimized().unwrap_or(false) {
                         let w = window.clone();
                         std::thread::spawn(move || {
@@ -850,6 +935,9 @@ fn main() {
             update_check,
             update_install,
             open_releases_page,
+            bench_start,
+            bench_cancel,
+            bench_state,
         ])
         .setup(move |app| {
             let cfg = Config::load();

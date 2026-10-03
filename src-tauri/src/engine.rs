@@ -11,6 +11,7 @@ use serde::Serialize;
 use std::collections::{HashMap, HashSet};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering::SeqCst};
 use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -51,6 +52,8 @@ pub struct Status {
     pub window_title: Option<String>,
     /// All running games, when there is more than one to pick from.
     pub choices: Vec<Choice>,
+    /// What a running benchmark is doing, e.g. "Benchmark: round 2 of 6 · recording off".
+    pub bench: Option<String>,
 }
 
 #[derive(Clone)]
@@ -92,6 +95,9 @@ pub struct Engine {
     hotkey_err: Mutex<Option<String>>,
     /// The capture card picture shown in the capture window: (width, height, fps).
     feed: Mutex<Option<(u32, u32, u32)>>,
+    /// The benchmark switched recording off for a while.
+    bench_paused: AtomicBool,
+    bench_note: Mutex<Option<String>>,
     app: AppHandle,
 }
 
@@ -154,6 +160,8 @@ impl Engine {
             last_save: Mutex::new(None),
             hotkey_err: Mutex::new(None),
             feed: Mutex::new(None),
+            bench_paused: AtomicBool::new(false),
+            bench_note: Mutex::new(None),
             app,
         }
     }
@@ -212,6 +220,31 @@ impl Engine {
         }
     }
 
+    /// Benchmark: switch recording off (true) or back on (false). Off stops ffmpeg right away.
+    pub fn bench_pause(&self, on: bool) {
+        let was = self.bench_paused.swap(on, SeqCst);
+        if on {
+            self.recorder.lock().stop();
+        } else if was {
+            self.config_changed();
+        }
+    }
+
+    pub fn set_bench_note(&self, note: Option<String>) {
+        *self.bench_note.lock() = note;
+    }
+
+    /// The game a benchmark would measure: (pid, name). Not the capture card window.
+    pub fn bench_target(&self) -> Option<(u32, String)> {
+        let t = self.tracked.lock();
+        t.as_ref().filter(|t| t.exe != CAPTURE_EXE).map(|t| (t.pid, t.name.clone()))
+    }
+
+    /// ffmpeg's process id while recording.
+    pub fn recorder_pid(&self) -> Option<u32> {
+        self.recorder.lock().child_pid()
+    }
+
     pub fn memory(&self) -> win::MemInfo {
         win::memory_info(self.recorder.lock().child_handle())
     }
@@ -258,9 +291,19 @@ impl Engine {
         status.warn = self.hotkey_err.lock().clone();
         status.choices = choices;
         status.target = tracked.as_ref().map(|t| t.exe.clone());
+        status.bench = self.bench_note.lock().clone();
         let mut dot: Option<overlay::Target> = None;
 
-        match pick_target(&cfg, tracked.as_ref(), &monitors) {
+        let paused = self.bench_paused.load(SeqCst);
+        let target = if paused {
+            // The benchmark is measuring the game without recording.
+            self.recorder.lock().stop();
+            status.game = tracked.as_ref().map(|t| t.name.clone());
+            None
+        } else {
+            pick_target(&cfg, tracked.as_ref(), &monitors)
+        };
+        match target {
             Some((mon, game)) => {
                 status.game = Some(game);
                 status.monitor = Some(mon.label.clone());
@@ -312,6 +355,7 @@ impl Engine {
                     None => status.region = Some("waiting for the game window".into()),
                 }
             }
+            None if paused => {}
             None => {
                 self.keep_or_discard(&cfg);
                 *self.strikes.lock() = 0;
@@ -640,6 +684,9 @@ impl Engine {
         let game = short(st.game.as_deref().unwrap_or("Desktop"), 24);
         let (kind, tip) = if let Some(e) = &st.error {
             (tray::Kind::Idle, format!("TUFFClip · {}", short(e, 80)))
+        } else if let Some(b) = &st.bench {
+            let kind = if st.recording { tray::Kind::Recording } else { tray::Kind::Idle };
+            (kind, format!("TUFFClip · {game}\n{}", short(b, 80)))
         } else if st.recording {
             (
                 tray::Kind::Recording,

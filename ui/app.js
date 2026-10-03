@@ -132,15 +132,19 @@ function showView(v) {
   $("#view-library").hidden = v !== "library";
   $("#view-settings").hidden = v !== "settings";
   $("#view-preview").hidden = v !== "preview";
+  $("#view-bench").hidden = v !== "bench";
   $("#tabLibrary").classList.toggle("active", v === "library");
   $("#tabSettings").classList.toggle("active", v === "settings");
   $("#tabPreview").classList.toggle("active", v === "preview");
+  $("#tabBench").classList.toggle("active", v === "bench");
+  if (v === "bench") renderBench();
   if (v === "settings") openSettings(); else stopMemPoll();
   if (v === "preview") startPreview(); else stopPreview();
 }
 $("#tabLibrary").addEventListener("click", () => showView("library"));
 $("#tabSettings").addEventListener("click", () => showView("settings"));
 $("#tabPreview").addEventListener("click", () => showView("preview"));
+$("#tabBench").addEventListener("click", () => showView("bench"));
 $("#expLow").checked = store.get("expLow", false);
 $("#expLow").addEventListener("change", (e) => store.set("expLow", e.target.checked));
 
@@ -218,6 +222,7 @@ function updateStatusText() {
   const held = !st.recording && !!st.held_until_ms;
   let text;
   if (st.error) text = st.error;
+  else if (st.bench) text = st.bench;
   else if (st.recording) {
     const mon = (st.monitor || "").replace(/ \(.*/, "");
     const region = st.region && st.region !== "whole display" ? st.region : "";
@@ -290,6 +295,7 @@ function renderStatus(st) {
   }
 
   if (pv.on) previewStatus();
+  if (S.view === "bench") renderBenchWhat();
 
   const warn = st.warn || "";
   if (warn && warn !== S.warn) toast(warn, true);
@@ -349,6 +355,205 @@ document.addEventListener("visibilitychange", () => {
   if (document.hidden) { pv.on = false; clearTimeout(pv.retry); invoke("preview_stop").catch(() => {}); }
   else startPreview();
 });
+
+// ------------------------------------------------------------------ benchmark
+// Recording on vs off while you play. Basic reads GPU/CPU load (no admin); Full also counts the
+// game's real frames through a small admin helper (UAC prompt each test). Numbers come from bench.rs.
+const BENCH_LEN = { 2: [4, 15], 4: [6, 20], 8: [8, 30] }; // minutes -> [rounds, seconds per half]
+const bench = {
+  access: store.get("clipr.benchAccess", "basic"),
+  len: store.get("clipr.benchLen", 4),
+  running: false,
+  prog: null,
+  hist: store.get("clipr.benchHist", []),
+};
+if (!BENCH_LEN[bench.len]) bench.len = 4;
+if (!Array.isArray(bench.hist)) bench.hist = [];
+bench.result = bench.hist[0]?.r || null;
+
+const pctTxt = (x) => `${Math.abs(x) < 10 ? trimNum(Math.abs(x)) : Math.round(Math.abs(x))}%`;
+const fpsTxt = (x) => (x == null ? "–" : x < 100 ? trimNum(x) : String(Math.round(x)));
+
+function renderBenchWhat() {
+  const st = S.status;
+  const el = $("#benchWhat");
+  if (bench.running && bench.prog?.game) el.innerHTML = `<b>${esc(bench.prog.game)}</b>${st?.summary ? " · " + esc(st.summary) : ""}`;
+  else if (st?.recording && st.game && !String(st.region || "").includes("capture card")) el.innerHTML = `<b>${esc(st.game)}</b> · ${esc(st.summary)}`;
+  else el.textContent = "Your game with your current recording settings. Start one of your games; the test measures the game TUFFClip is recording.";
+}
+
+function renderBench() {
+  setSeg("#benchAccess", "v", bench.access);
+  $$("#benchLen button").forEach((b) => b.classList.toggle("active", Number(b.dataset.v) === bench.len));
+  $("#benchAccessHint").textContent = bench.access === "full"
+    ? "Also counts your game's real frames, for exact FPS and 1% lows. Reading frame timings needs admin rights, so Windows may ask for permission each test (not if your account is already allowed). Only a small helper gets it, and it closes when the test ends. Works with DirectX games; for others it falls back to the Basic readings."
+    : "Reads how busy your GPU and CPU are, like Task Manager. No admin needed, but it can only estimate the frame cost.";
+  $$("#benchAccess button, #benchLen button").forEach((b) => (b.disabled = bench.running));
+  renderBenchWhat();
+
+  $("#benchStart").hidden = bench.running;
+  $("#benchCancel").hidden = !bench.running;
+  const [rounds, secs] = BENCH_LEN[bench.len];
+  $("#benchInfo").textContent = bench.running ? "" : `${rounds} rounds of ${secs} s on and ${secs} s off`;
+
+  const p = bench.prog;
+  $("#benchProg").hidden = !bench.running;
+  if (bench.running && p) {
+    $("#benchBar").style.width = Math.round((p.pct || 0) * 100) + "%";
+    const game = p.game || "your game";
+    let t;
+    if (p.stage === "starting") t = "Starting the frame counter…";
+    else if (p.stage === "admin") t = "Waiting for admin permission…";
+    else if (p.stage === "waiting") t = `Switch to ${game}. The test starts when it's in front and being recorded.`;
+    else if (p.stage === "away") t = `Paused: switch back to ${game}`;
+    else if (p.stage === "finishing") t = "Working out the results…";
+    else t = [`Round ${p.round} of ${p.rounds}`, `recording ${p.on ? "on" : "off"}`, p.live_fps ? `${fpsTxt(p.live_fps)} fps` : "", `about ${fmtEta(p.secs_left)} left`].filter(Boolean).join(" · ");
+    $("#benchProgInfo").textContent = t;
+  }
+  renderBenchResult();
+  renderBenchHist();
+}
+
+$("#benchAccess").addEventListener("click", (e) => {
+  const b = e.target.closest("button");
+  if (!b || bench.running) return;
+  bench.access = b.dataset.v;
+  store.set("clipr.benchAccess", bench.access);
+  renderBench();
+});
+$("#benchLen").addEventListener("click", (e) => {
+  const b = e.target.closest("button");
+  if (!b || bench.running) return;
+  bench.len = Number(b.dataset.v);
+  store.set("clipr.benchLen", bench.len);
+  renderBench();
+});
+$("#benchStart").addEventListener("click", async () => {
+  const [rounds, phase_secs] = BENCH_LEN[bench.len];
+  try {
+    bench.running = true;
+    bench.prog = { stage: bench.access === "full" ? "starting" : "waiting", pct: 0, game: S.status?.game };
+    renderBench();
+    await invoke("bench_start", { req: { access: bench.access, rounds, phase_secs } });
+  } catch (e) {
+    bench.running = false;
+    renderBench();
+    toast(String(e), true);
+  }
+});
+$("#benchCancel").addEventListener("click", () => invoke("bench_cancel").catch(() => {}));
+
+// What the numbers mean, in words. sev: 0 none, 1 very few frames, 2 some, 3 a lot
+function benchVerdict(r) {
+  const out = { title: "", lines: [], advice: [], sev: 0 };
+  const sevOf = (c) => (c < 3 ? 1 : c < 8 ? 2 : 3);
+  if (r.frames) {
+    const d = r.fps_diff, n = r.fps_noise;
+    if (d == null) {
+      out.title = "Not enough data";
+      out.lines.push("There weren't enough clean seconds to compare. Stay in the game while the test runs.");
+      return out;
+    }
+    const cost = -d;
+    if (n == null || cost <= Math.max(n, 1)) {
+      out.title = "No measurable difference";
+      out.lines.push(n == null
+        ? `Recording on and off came out ${pctTxt(d)} apart.`
+        : `Recording on and off were ${pctTxt(d)} apart, within this scene's normal ups and downs (give or take ${pctTxt(n)}).`);
+    } else {
+      out.sev = sevOf(cost);
+      out.title = ["", "Recording costs very few frames", "Recording costs some frames", "Recording costs a lot of frames"][out.sev];
+      out.lines.push(`About ${pctTxt(cost)} fewer frames with recording on: ${fpsTxt(r.on.fps)} instead of ${fpsTxt(r.off.fps)} fps on average (give or take ${pctTxt(n)}).`);
+    }
+    const ld = r.low_diff, ln = r.low_noise;
+    if (ld != null && -ld > Math.max(ln ?? 0, 2)) {
+      out.lines.push(`The 1% lows drop ${pctTxt(ld)} (${fpsTxt(r.on.low1)} instead of ${fpsTxt(r.off.low1)} fps), so you may notice small stutters.`);
+      out.sev = Math.max(out.sev, -ld >= 8 ? 2 : 1);
+      if (!out.sev || out.title === "No measurable difference") out.title = "Same average, but more stutter";
+    }
+  } else {
+    if (r.access === "full") out.lines.push("TUFFClip couldn't see this game's frames (it may use Vulkan or OpenGL), so these are estimates from GPU load.");
+    if (!r.gpu_bound) {
+      out.title = "Probably no frames lost";
+      out.lines.push(`Your GPU was ${Math.round(r.on.gpu_total)}% busy with recording on, so it had room left for the game. Recording added about ${pctTxt(r.rec_gpu)} of GPU work.`);
+      out.lines.push("It can still cause small stutters, which only real frame counts show.");
+    } else {
+      const c = r.est_cost ?? 0;
+      out.sev = c < 1 ? 0 : sevOf(c);
+      out.title = ["Probably costs no frames", "Probably costs very few frames", "Probably costs some frames", "Probably costs a lot of frames"][out.sev];
+      out.lines.push(`Your GPU was fully busy, and the game got about ${pctTxt(c)} less of it with recording on. Expect roughly that many fewer frames.`);
+    }
+    if (r.access === "basic") out.lines.push("Run the Full test for real FPS and 1% lows.");
+  }
+  if (out.sev >= 2) {
+    const native = !r.height || r.height >= r.src_h;
+    out.advice.push(native && r.src_h > 1080
+      ? "To win frames back, record at 1080p instead of full resolution (top bar), then test again."
+      : "To win frames back, lower the recording resolution or frame rate (top bar), then test again.");
+  }
+  if (r.on.encoder > 85) out.advice.push(`The video encoder was nearly maxed out (${Math.round(r.on.encoder)}%). Lower the frame rate or resolution, or clips may stutter.`);
+  if (r.on.cpu_total > 90) out.advice.push(`Your CPU was ${Math.round(r.on.cpu_total)}% busy with recording on, so recording's CPU work may cost frames too.`);
+  return out;
+}
+
+function renderBenchResult() {
+  const box = $("#benchResult");
+  const r = bench.result;
+  box.hidden = !r || bench.running;
+  if (!r || bench.running) return;
+  const v = benchVerdict(r);
+  const pts = (a, b) => { const d = Math.round(a - b); return d === 0 ? "same" : `${d > 0 ? "+" : "−"}${Math.abs(d)} pts`; };
+  const chg = (d) => (d == null ? "" : `${d < 0 ? "−" : "+"}${pctTxt(d)}`);
+  const pc = (x) => `${Math.round(x)}%`;
+  const rows = [];
+  if (r.frames) {
+    rows.push(["Average FPS", fpsTxt(r.on.fps), fpsTxt(r.off.fps), chg(r.fps_diff)]);
+    rows.push(["1% low FPS", fpsTxt(r.on.low1), fpsTxt(r.off.low1), chg(r.low_diff)]);
+  }
+  rows.push(["GPU busy", pc(r.on.gpu_total), pc(r.off.gpu_total), pts(r.on.gpu_total, r.off.gpu_total)]);
+  rows.push(["Game's share of the GPU", pc(r.on.gpu_game), pc(r.off.gpu_game), pts(r.on.gpu_game, r.off.gpu_game)]);
+  rows.push(["Video encoder", pc(r.on.encoder), pc(r.off.encoder), pts(r.on.encoder, r.off.encoder)]);
+  rows.push(["CPU busy", pc(r.on.cpu_total), pc(r.off.cpu_total), pts(r.on.cpu_total, r.off.cpu_total)]);
+  rows.push(["CPU used by TUFFClip", `${trimNum(r.on.cpu_rec)}%`, `${trimNum(r.off.cpu_rec)}%`, ""]);
+  const when = new Date(r.finished_ms).toLocaleString([], { dateStyle: "medium", timeStyle: "short" });
+  box.innerHTML = `
+    <div class="bench-verdict${v.sev >= 2 ? " attn" : ""}">
+      <h3>${esc(v.title)}</h3>
+      ${v.lines.map((l) => `<p class="hint">${esc(l)}</p>`).join("")}
+    </div>
+    <table class="bench-table">
+      <thead><tr><th></th><th>Recording on</th><th>Recording off</th><th>Difference</th></tr></thead>
+      <tbody>${rows.map((x) => `<tr><td>${x[0]}</td><td>${x[1]}</td><td>${x[2]}</td><td>${x[3]}</td></tr>`).join("")}</tbody>
+    </table>
+    ${v.advice.map((l) => `<p class="hint">${esc(l)}</p>`).join("")}
+    <p class="hint">${esc(r.game)} · ${esc(r.settings)} · ${r.access === "full" ? "Full" : "Basic"} test, ${Math.round(r.on.secs)} s on and ${Math.round(r.off.secs)} s off over ${r.rounds} rounds · ${esc(when)}</p>`;
+}
+
+function renderBenchHist() {
+  const h = bench.hist.slice(1);
+  $("#benchHistWrap").hidden = !h.length;
+  if (!h.length) return;
+  $("#benchHist").innerHTML = `<thead><tr><th>When</th><th>Game</th><th>Settings</th><th>Test</th><th>Result</th></tr></thead><tbody>${h
+    .map((x) => {
+      const r = x.r;
+      const when = new Date(r.finished_ms).toLocaleString([], { dateStyle: "short", timeStyle: "short" });
+      return `<tr><td>${esc(when)}</td><td>${esc(r.game)}</td><td>${esc(r.settings)}</td><td>${r.access === "full" ? "Full" : "Basic"}</td><td>${esc(benchVerdict(r).title)}</td></tr>`;
+    })
+    .join("")}</tbody>`;
+}
+
+function benchDone(r, quiet = false) {
+  bench.running = false;
+  bench.prog = null;
+  bench.result = r;
+  if (!bench.hist.some((x) => x.r.finished_ms === r.finished_ms)) {
+    bench.hist.unshift({ r });
+    bench.hist = bench.hist.slice(0, 8);
+    store.set("clipr.benchHist", bench.hist);
+  }
+  renderBench();
+  if (!quiet) toast(`Benchmark finished: ${benchVerdict(r).title.toLowerCase()}`);
+}
 
 // ------------------------------------------------------------------ library
 async function loadClips() {
@@ -2010,6 +2215,21 @@ $("#settingsScroll").addEventListener("scroll", spy);
     clearTimeout(pv.retry);
     pv.retry = setTimeout(() => { if (pv.on && S.status?.recording && !document.hidden) startPreview(); }, 3000);
   });
+  listen("bench-progress", (e) => { bench.running = true; bench.prog = e.payload; renderBench(); });
+  listen("bench-done", (e) => benchDone(e.payload));
+  listen("bench-error", (e) => {
+    bench.running = false;
+    bench.prog = null;
+    renderBench();
+    toast(e.payload.msg, !e.payload.cancelled);
+  });
+  try {
+    const b = await invoke("bench_state");
+    bench.running = b.running;
+    bench.prog = b.progress;
+    if (b.result && !bench.hist.some((x) => x.r.finished_ms === b.result.finished_ms)) benchDone(b.result, true);
+  } catch {}
+
   listen("export-progress", (e) => {
     if (!S.sel || e.payload.path !== S.sel.path) return;
     const p = e.payload.pct;

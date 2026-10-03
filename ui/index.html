@@ -14,6 +14,7 @@
     <button class="tab" id="tabSettings" data-tab="settings" role="tab">Settings</button>
     <button class="tab active" id="tabLibrary" data-tab="library" role="tab">Library</button>
     <button class="tab" id="tabPreview" data-tab="preview" role="tab">Preview</button>
+    <button class="tab" id="tabBench" data-tab="bench" role="tab">Benchmark</button>
   </nav>
   <button class="tab" id="openCapture" title="Open the capture card window to play and record a console over HDMI">Capture card</button>
   <div class="quick" id="quick" role="group" aria-label="Quick settings">
@@ -225,14 +226,62 @@
     </section>
   </section>
 
+  <!-- ============================== BENCHMARK -->
+  <section class="view" id="view-bench" hidden>
+    <section class="stage">
+      <div class="bench">
+        <div>
+          <h2>Recording benchmark</h2>
+          <p class="hint">Finds out how many frames recording costs your game. While you play, TUFFClip switches recording on and off a few times, then compares the two.</p>
+        </div>
+        <div class="field">
+          <label>How much access</label>
+          <div class="seg wide" id="benchAccess">
+            <button data-v="basic">Basic · no admin</button>
+            <button data-v="full">Full · may ask for admin</button>
+          </div>
+          <p class="hint" id="benchAccessHint"></p>
+        </div>
+        <div class="field">
+          <label>Test length</label>
+          <div class="chips" id="benchLen">
+            <button data-v="2">About 2 min</button>
+            <button data-v="4">About 4 min</button>
+            <button data-v="8">About 8 min</button>
+          </div>
+          <p class="hint">Longer tests tell a real cost apart from the game's normal ups and downs more reliably.</p>
+        </div>
+        <div class="field">
+          <label>What gets tested</label>
+          <div class="card" id="benchWhat"></div>
+        </div>
+        <p class="hint">Start the test, then switch to your game: it begins once the game is in front. Keep the scene steady while it runs (stand somewhere typical, or run the game's own benchmark). The recording dot flashes when the test starts and when it ends. Your replay buffer is emptied, so save any clip you want first.</p>
+        <div class="bench-row">
+          <span class="est" id="benchInfo"></span>
+          <button class="btn" id="benchCancel" hidden>Cancel</button>
+          <button class="btn primary" id="benchStart">Start test</button>
+        </div>
+        <div class="progress-row" id="benchProg" hidden>
+          <div class="progress"><div class="bar" id="benchBar"></div></div>
+          <span class="est" id="benchProgInfo"></span>
+        </div>
+        <div class="bench-result" id="benchResult" hidden></div>
+        <div class="field" id="benchHistWrap" hidden>
+          <label>Earlier tests</label>
+          <table class="bench-table" id="benchHist"></table>
+        </div>
+      </div>
+    </section>
+  </section>
+
   <!-- ============================== SETTINGS -->
   <section class="view settings-view" id="view-settings" hidden>
     <nav class="settings-nav" id="settingsNav">
       <button class="item active" data-group="general">General</button>
       <button class="item" data-group="games">Games</button>
-      <button class="item" data-group="card">Capture card</button>
       <button class="item" data-group="capture">Capture</button>
       <button class="item" data-group="audio">Audio</button>
+      <button class="item" data-group="card">Capture card</button>
       <button class="item" data-group="storage">Storage</button>
       <button class="item" data-group="shortcuts">Shortcuts</button>
       <button class="item" data-group="advanced">Advanced</button>
@@ -287,20 +336,6 @@
           <label>Hidden programs</label>
           <p class="hint">Programs you hid from the running-apps list. Show one again to be able to pick it.</p>
           <div class="row"><button class="btn sm" id="openIgnored">Hidden programs…</button><span class="unit" id="ignoredCount"></span></div>
-        </div>
-      </section>
-
-      <section class="group" id="g-card">
-        <h3>Capture card</h3>
-        <p class="hint">Play and record a console through a USB HDMI capture card.</p>
-        <div class="field">
-          <div class="row"><button class="btn sm" id="openCapture2">Open capture card window</button></div>
-          <p class="hint" id="cardHint"></p>
-        </div>
-        <div class="field">
-          <label for="captureName">File clips under</label>
-          <input id="captureName" spellcheck="false" maxlength="60" />
-          <p class="hint">Clips from the card get their own folder, like a game. Renaming moves your existing card clips too.</p>
         </div>
       </section>
 
@@ -430,6 +465,20 @@
             <div class="row"><input type="number" id="audioOffset" step="10" class="grow"><span class="unit">ms</span></div>
             <p class="hint">Use if sound is ahead of or behind the picture.</p>
           </div>
+        </div>
+      </section>
+
+      <section class="group" id="g-card">
+        <h3>Capture card</h3>
+        <p class="hint">Play and record a console through a USB HDMI capture card.</p>
+        <div class="field">
+          <div class="row"><button class="btn sm" id="openCapture2">Open capture card window</button></div>
+          <p class="hint" id="cardHint"></p>
+        </div>
+        <div class="field">
+          <label for="captureName">File clips under</label>
+          <input id="captureName" spellcheck="false" maxlength="60" />
+          <p class="hint">Clips from the card get their own folder, like a game. Renaming moves your existing card clips too.</p>
         </div>
       </section>
 

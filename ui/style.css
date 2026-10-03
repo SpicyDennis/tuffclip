@@ -203,3 +203,18 @@
 .pv-frame img { width: 100%; height: 100%; object-fit: contain; display: block; }
 .pv-frame .empty { height: auto; padding: 0 24px; }
 .pv-head .meta { flex-wrap: wrap; }
+
+/* ---------------------------------------------------------------- benchmark */
+.bench { display: flex; flex-direction: column; gap: 16px; max-width: 760px; }
+.bench-row { display: flex; align-items: center; justify-content: flex-end; gap: 14px; }
+.bench-result { display: flex; flex-direction: column; gap: 12px; padding-top: 16px; border-top: 1px solid var(--line); }
+.bench-verdict { display: flex; flex-direction: column; gap: 4px; }
+.bench-verdict h3 { font-size: 18px; }
+.bench-verdict.attn h3 { color: var(--tally); }
+.bench-table { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; }
+.bench-table th { color: var(--muted); font-size: 13px; font-weight: 400; text-align: right; padding: 0 10px 6px; border-bottom: 1px solid var(--line); }
+.bench-table td { text-align: right; padding: 6px 10px; border-bottom: 1px solid var(--line); }
+.bench-table th:first-child, .bench-table td:first-child { text-align: left; padding-left: 0; }
+.bench-table td:last-child { color: var(--muted); }
+#benchHist th, #benchHist td { text-align: left; font-size: 13px; }
+#benchHist td:last-child { color: var(--text); }
