@@ -115,6 +115,9 @@ pub struct Config {
     pub ignored_exes: Vec<String>,
     /// Clips recorded from the capture card window are filed under this name.
     pub capture_name: String,
+    /// The capture card window may use the camera API (Windows sees capture cards as cameras).
+    /// Off until the user allows it from that window.
+    pub camera_access: bool,
 }
 
 impl Default for Config {
@@ -153,7 +156,8 @@ impl Default for Config {
             capture_method: CaptureMethod::Window,
             indicator: Indicator::TopRight,
             ignored_exes: Vec::new(),
-            capture_name: "Switch 2".into(),
+            capture_name: "Capture card".into(),
+            camera_access: false,
         }
     }
 }
@@ -227,7 +231,7 @@ impl Config {
         });
         self.capture_name = self.capture_name.trim().to_string();
         if self.capture_name.is_empty() {
-            self.capture_name = "Switch 2".into();
+            self.capture_name = "Capture card".into();
         }
         self.games.retain(|g| !g.exe.trim().is_empty());
         for g in &mut self.games {
