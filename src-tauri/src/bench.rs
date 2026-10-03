@@ -75,11 +75,13 @@ pub struct Progress {
 pub struct Side {
     pub fps: Option<f64>,
     pub low1: Option<f64>,
-    /// How busy the GPU's 3D engine was in total.
+    /// How busy the GPU's busiest drawing engine was in total.
     pub gpu_total: f64,
-    /// The game's own share of it.
+    /// The game's use of its busiest drawing engine (some games, e.g. Path of Exile,
+    /// draw on their own `graphics_1` queue instead of the shared 3D one).
     pub gpu_game: f64,
-    /// Everything else on it (recording, Windows' capture work, other programs).
+    /// Everything else on the busiest engine that isn't the game (recording,
+    /// Windows' capture and composition work, other programs).
     pub gpu_other: f64,
     pub encoder: f64,
     pub cpu_total: f64,
@@ -104,7 +106,7 @@ pub struct BenchResult {
     pub fps_noise: Option<f64>,
     pub low_diff: Option<f64>,
     pub low_noise: Option<f64>,
-    /// Extra GPU work with recording on (percentage points of the 3D engine).
+    /// Extra GPU work with recording on (percentage points of the busiest drawing engine).
     pub rec_gpu: f64,
     /// The GPU was (nearly) fully busy with recording on, so its extra work comes out of the game's frames.
     pub gpu_bound: bool,
@@ -114,6 +116,13 @@ pub struct BenchResult {
     pub src_h: u32,
     pub height: u32,
     pub rec_fps: u32,
+    /// Recorded with window capture (gfxcapture) rather than the display (ddagrab).
+    #[serde(default)]
+    pub window_capture: bool,
+    /// The game drew on its own GPU queue, apart from Windows' and the recording's work, so its
+    /// share of a maxed-out GPU can't be read from the load counters (Basic can't estimate).
+    #[serde(default)]
+    pub game_own_queue: bool,
     pub finished_ms: u64,
 }
 
@@ -218,7 +227,10 @@ fn nap(ms: u64) -> Result<()> {
 struct GpuSample {
     total: f64,
     game: f64,
+    other: f64,
     encoder: f64,
+    /// The game's busiest engine isn't the one where everything else runs.
+    own_queue: bool,
 }
 
 /// `\GPU Engine(*)\Utilization Percentage`: one instance per process and engine, named like
@@ -275,24 +287,31 @@ impl Gpu {
                 }
             }
         }
-        // Per engine: everyone's use added up, and the game's.
-        let mut d3: HashMap<String, (f64, f64)> = HashMap::new();
+        // Per drawing engine: everyone's use added up, and the game's. Games don't all draw on
+        // "3D": Path of Exile uses its own "Graphics_1" queue, which shares the same shader cores.
+        let mut draw: HashMap<String, (f64, f64)> = HashMap::new();
         let mut enc: HashMap<String, f64> = HashMap::new();
         for (pid, engine, kind, v) in items {
-            if kind == "3D" {
-                let e = d3.entry(engine).or_default();
+            let kind = kind.to_ascii_lowercase();
+            if kind == "3d" || kind.starts_with("graphics") {
+                let e = draw.entry(engine).or_default();
                 e.0 += v;
                 if pid == game_pid {
                     e.1 += v;
                 }
-            } else if kind.starts_with("VideoEncode") {
+            } else if kind.starts_with("videoencode") {
                 *enc.entry(engine).or_default() += v;
             }
         }
-        // The busiest 3D engine is the game's GPU (an iGPU next to it idles).
-        let (total, game) = d3.values().copied().fold((0.0, 0.0), |a, b| if b.0 > a.0 { b } else { a });
+        // The busiest engine is on the game's GPU (an iGPU next to it idles). The game's use is
+        // its busiest engine; "other" is the busiest engine's use by everyone but the game.
+        let busiest = |f: fn(&(f64, f64)) -> f64| draw.iter().map(|(k, e)| (k, f(e))).fold((None, 0.0), |a, (k, v)| if v > a.1 { (Some(k), v) } else { a });
+        let (_, total) = busiest(|e| e.0);
+        let (game_eng, game) = busiest(|e| e.1);
+        let (other_eng, other) = busiest(|e| e.0 - e.1);
+        let own_queue = game_eng.is_some() && other_eng.is_some() && game_eng != other_eng;
         let encoder = enc.values().copied().fold(0.0, f64::max);
-        Some(GpuSample { total: total.min(100.0), game: game.min(100.0), encoder: encoder.min(100.0) })
+        Some(GpuSample { total: total.min(100.0), game: game.min(100.0), other: other.min(100.0), encoder: encoder.min(100.0), own_queue })
     }
 }
 
@@ -623,7 +642,7 @@ fn run(app: &AppHandle, eng: &Arc<Engine>, req: &BenchRequest) -> Result<BenchRe
     if let Some(h) = &helper {
         h.command(&format!("pid {pid}"));
     }
-    let (settings, src_h, height, rec_fps) = {
+    let (settings, src_h, height, rec_fps, window_capture) = {
         let st = eng.status();
         let spec = eng.spec();
         (
@@ -631,6 +650,7 @@ fn run(app: &AppHandle, eng: &Arc<Engine>, req: &BenchRequest) -> Result<BenchRe
             spec.as_ref().map(|s| s.src_h).unwrap_or(0),
             spec.as_ref().map(|s| s.height).unwrap_or(0),
             spec.as_ref().map(|s| s.fps).unwrap_or(0),
+            spec.as_ref().is_some_and(|s| s.window.is_some()),
         )
     };
     // Tell the player it has started.
@@ -752,7 +772,7 @@ fn run(app: &AppHandle, eng: &Arc<Engine>, req: &BenchRequest) -> Result<BenchRe
         win::beep();
     }
 
-    Ok(summarize(req, &plan, &buckets, frames.as_deref(), freq, game, settings, src_h, height, rec_fps))
+    Ok(summarize(req, &plan, &buckets, frames.as_deref(), freq, game, settings, src_h, height, rec_fps, window_capture))
 }
 
 // ---------------------------------------------------------------- results
@@ -808,6 +828,7 @@ fn summarize(
     src_h: u32,
     height: u32,
     rec_fps: u32,
+    window_capture: bool,
 ) -> BenchResult {
     // Per phase: (frames, seconds, gaps)
     let mut per_phase: Vec<(usize, f64, Vec<f64>)> = vec![(0, 0.0, Vec::new()); plan.len()];
@@ -831,13 +852,13 @@ fn summarize(
         let mut s = Side {
             gpu_total: avg(&|b| b.gpu.map(|g| g.total)),
             gpu_game: avg(&|b| b.gpu.map(|g| g.game)),
+            gpu_other: avg(&|b| b.gpu.map(|g| g.other)),
             encoder: avg(&|b| b.gpu.map(|g| g.encoder)),
             cpu_total: avg(&|b| b.cpu.map(|c| c.0)),
             cpu_rec: avg(&|b| b.cpu.map(|c| c.1)),
             secs: bs.iter().map(|b| (b.b - b.a) as f64 / freq).sum(),
             ..Default::default()
         };
-        s.gpu_other = (s.gpu_total - s.gpu_game).max(0.0);
         if saw_frames {
             let (mut n, mut secs, mut gaps) = (0usize, 0.0, Vec::new());
             for (i, p) in per_phase.iter().enumerate() {
@@ -880,8 +901,12 @@ fn summarize(
 
     let rec_gpu = (on.gpu_other - off.gpu_other).max(0.0);
     let gpu_bound = on.gpu_total >= 92.0;
+    // The game busy on its own queue while the rest is elsewhere: both can read near 100%
+    // at once, so the game's share says nothing about what recording takes from it.
+    let own_queue = buckets.iter().filter_map(|b| b.gpu).filter(|g| g.game > 5.0).collect::<Vec<_>>();
+    let game_own_queue = !own_queue.is_empty() && own_queue.iter().filter(|g| g.own_queue).count() * 2 > own_queue.len();
     // A maxed-out GPU shares its time: the game's frames follow the game's share of it.
-    let est_cost = gpu_bound.then(|| {
+    let est_cost = (gpu_bound && !game_own_queue).then(|| {
         if off.gpu_game > 5.0 { ((off.gpu_game - on.gpu_game) / off.gpu_game * 100.0).max(0.0) } else { rec_gpu }
     });
 
@@ -903,6 +928,8 @@ fn summarize(
         src_h,
         height,
         rec_fps,
+        window_capture,
+        game_own_queue,
         finished_ms: now_ms(),
     }
 }

@@ -398,7 +398,7 @@ impl Engine {
             if let Some(cur) = running.filter(|c| c.window == Some(hwnd)) {
                 s.adapter = cur.adapter;
                 s.output = cur.output;
-                if cfg.fps == 0 {
+                if cfg.fps == 0 && cur.native_fps {
                     s.fps = cur.fps;
                 }
             }
@@ -413,7 +413,9 @@ impl Engine {
             let mut s = RecordSpec::new(cfg, mon, None, Some((hwnd, cur.src_w, cur.src_h)));
             s.adapter = cur.adapter;
             s.output = cur.output;
-            if cfg.fps == 0 {
+            // Native keeps the rate it started with, but switching to native from a picked
+            // rate (60 -> native) must change it.
+            if cfg.fps == 0 && cur.native_fps {
                 s.fps = cur.fps;
                 s.apply_auto_bitrate(cfg);
             }

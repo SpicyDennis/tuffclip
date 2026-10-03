@@ -55,6 +55,8 @@ pub struct RecordSpec {
     /// Window capture always outputs `src_w`×`src_h`, scaling the window to fit (capture card window).
     pub force_size: bool,
     pub fps: u32,
+    /// `fps` is the monitor's rate ("native"), not one picked in settings.
+    pub native_fps: bool,
     pub height: u32,
     pub bitrate_kbps: u32,
     pub encoder: Encoder,
@@ -92,6 +94,7 @@ impl RecordSpec {
             window: window.map(|w| w.0),
             force_size: false,
             fps,
+            native_fps: cfg.fps == 0,
             height: cfg.height,
             bitrate_kbps: cfg.bitrate_kbps,
             encoder: cfg.encoder,

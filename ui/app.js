@@ -477,6 +477,9 @@ function benchVerdict(r) {
       out.title = "Probably no frames lost";
       out.lines.push(`Your GPU was ${Math.round(r.on.gpu_total)}% busy with recording on, so it had room left for the game. Recording added about ${pctTxt(r.rec_gpu)} of GPU work.`);
       out.lines.push("It can still cause small stutters, which only real frame counts show.");
+    } else if (r.game_own_queue) {
+      out.title = "Can't tell from GPU load alone";
+      out.lines.push(`Your GPU was fully busy and recording added about ${pctTxt(r.rec_gpu)} of GPU work, but this game draws on its own GPU queue, so its share can't be read from the load.`);
     } else {
       const c = r.est_cost ?? 0;
       out.sev = c < 1 ? 0 : sevOf(c);
@@ -486,10 +489,16 @@ function benchVerdict(r) {
     if (r.access === "basic") out.lines.push("Run the Full test for real FPS and 1% lows.");
   }
   if (out.sev >= 2) {
+    // A lower resolution or frame rate only saves encoder work. When the encoder isn't busy, the
+    // cost is the capture itself (Path of Exile: 1440p and 1080p, 165 and 60 fps all cost ~15%).
     const native = !r.height || r.height >= r.src_h;
-    out.advice.push(native && r.src_h > 1080
-      ? "To win frames back, record at 1080p instead of full resolution (top bar), then test again."
-      : "To win frames back, lower the recording resolution or frame rate (top bar), then test again.");
+    if (r.on.encoder >= 50) {
+      out.advice.push(native && r.src_h > 1080
+        ? "To win frames back, record at 1080p instead of full resolution (top bar), then test again."
+        : "To win frames back, lower the recording resolution or frame rate (top bar), then test again.");
+    } else {
+      out.advice.push("Most of this is the cost of capturing the picture, not encoding it, so a lower recording resolution or frame rate won't win much back.");
+    }
   }
   if (r.on.encoder > 85) out.advice.push(`The video encoder was nearly maxed out (${Math.round(r.on.encoder)}%). Lower the frame rate or resolution, or clips may stutter.`);
   if (r.on.cpu_total > 90) out.advice.push(`Your CPU was ${Math.round(r.on.cpu_total)}% busy with recording on, so recording's CPU work may cost frames too.`);
@@ -504,14 +513,22 @@ function renderBenchResult() {
   const v = benchVerdict(r);
   const pts = (a, b) => { const d = Math.round(a - b); return d === 0 ? "same" : `${d > 0 ? "+" : "−"}${Math.abs(d)} pts`; };
   const chg = (d) => (d == null ? "" : `${d < 0 ? "−" : "+"}${pctTxt(d)}`);
+  // The columns pool every frame; the test pairs each round's on and off. Show the change
+  // between the columns, and say when the paired test can't tell it from noise.
+  const diff = (on, off, d, n) => {
+    if (on == null || !off) return "";
+    const c = chg(((on - off) / off) * 100);
+    return d != null && n != null && Math.abs(d) <= Math.max(n, 1) ? `${c}, within noise` : c;
+  };
   const pc = (x) => `${Math.round(x)}%`;
   const rows = [];
   if (r.frames) {
-    rows.push(["Average FPS", fpsTxt(r.on.fps), fpsTxt(r.off.fps), chg(r.fps_diff)]);
-    rows.push(["1% low FPS", fpsTxt(r.on.low1), fpsTxt(r.off.low1), chg(r.low_diff)]);
+    rows.push(["Average FPS", fpsTxt(r.on.fps), fpsTxt(r.off.fps), diff(r.on.fps, r.off.fps, r.fps_diff, r.fps_noise)]);
+    rows.push(["1% low FPS", fpsTxt(r.on.low1), fpsTxt(r.off.low1), diff(r.on.low1, r.off.low1, r.low_diff, r.low_noise)]);
   }
   rows.push(["GPU busy", pc(r.on.gpu_total), pc(r.off.gpu_total), pts(r.on.gpu_total, r.off.gpu_total)]);
-  rows.push(["Game's share of the GPU", pc(r.on.gpu_game), pc(r.off.gpu_game), pts(r.on.gpu_game, r.off.gpu_game)]);
+  rows.push(["Game's GPU use", pc(r.on.gpu_game), pc(r.off.gpu_game), pts(r.on.gpu_game, r.off.gpu_game)]);
+  rows.push(["Other GPU work (Windows, capture, apps)", pc(r.on.gpu_other), pc(r.off.gpu_other), pts(r.on.gpu_other, r.off.gpu_other)]);
   rows.push(["Video encoder", pc(r.on.encoder), pc(r.off.encoder), pts(r.on.encoder, r.off.encoder)]);
   rows.push(["CPU busy", pc(r.on.cpu_total), pc(r.off.cpu_total), pts(r.on.cpu_total, r.off.cpu_total)]);
   rows.push(["CPU used by TUFFClip", `${trimNum(r.on.cpu_rec)}%`, `${trimNum(r.off.cpu_rec)}%`, ""]);
