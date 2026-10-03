@@ -18,6 +18,7 @@
   </nav>
   <button class="tab" id="openCapture" title="Open the capture card window to play and record a console over HDMI">Capture card</button>
   <div class="quick" id="quick" role="group" aria-label="Quick settings">
+    <span class="fav-tag" id="qFav" hidden>★ Favorite</span>
     <label>Clip length <select id="qClip" aria-label="Clip length"></select></label>
     <label>Resolution <select id="qHeight" aria-label="Resolution"></select></label>
     <label>Frame rate <select id="qFps" aria-label="Frame rate"></select></label>
@@ -267,8 +268,9 @@
         </div>
         <div class="bench-result" id="benchResult" hidden></div>
         <div class="field" id="benchHistWrap" hidden>
-          <label>Earlier tests</label>
-          <table class="bench-table" id="benchHist"></table>
+          <label>Your tests</label>
+          <div class="row"><button class="btn sm" id="benchAll">All tests…</button><span class="unit" id="benchCount"></span></div>
+          <p class="hint">Search and sort them, compare two, pick which one shows here, or make a test's settings a game's favorite.</p>
         </div>
       </div>
     </section>
@@ -333,6 +335,11 @@
           <div class="row"><button class="btn sm" id="openGames">Game list…</button><span class="unit" id="gamesCount"></span></div>
         </div>
         <div class="field">
+          <label>Favorite settings</label>
+          <p class="hint">A game with favorite settings records with them instead of the normal ones in Capture; other games keep the normal settings. Set them from a test in Benchmark.</p>
+          <div id="favList" class="game-list"></div>
+        </div>
+        <div class="field">
           <label>Hidden programs</label>
           <p class="hint">Programs you hid from the running-apps list. Show one again to be able to pick it.</p>
           <div class="row"><button class="btn sm" id="openIgnored">Hidden programs…</button><span class="unit" id="ignoredCount"></span></div>
@@ -342,6 +349,10 @@
       <section class="group" id="g-capture">
         <h3>Capture</h3>
         <p class="hint">What gets recorded, and how it looks. Higher quality costs more GPU and disk or RAM.</p>
+        <div class="card fav-note" id="favNote" hidden>
+          <span id="favNoteText"></span>
+          <button class="btn sm" id="favNoteBtn">Use normal settings</button>
+        </div>
         <div class="field">
           <div class="seg wide" id="captureSeg">
             <button data-mode="games">Only my games</button>
@@ -487,7 +498,8 @@
         <p class="hint">Where clips and the rolling buffer live, and what they use.</p>
         <div class="field">
           <label for="clipsDir">Clips folder</label>
-          <div class="row"><input id="clipsDir" class="grow"><button class="btn sm" id="openClips">Open clips folder</button></div>
+          <div class="row"><input id="clipsDir" class="grow"><button class="btn sm" id="pickClips">Browse…</button><button class="btn sm ghost" id="openClips">Open</button></div>
+          <p class="hint">New clips are saved here, and the library shows this folder. Clips already saved stay where they are.</p>
         </div>
         <div class="field">
           <label>Space used</label>
@@ -594,6 +606,24 @@
   <div class="dlg-head"><h3>Hidden programs</h3><button class="btn sm ghost" data-close>Close</button></div>
   <input type="search" class="dlg-search" id="ignoredSearch" placeholder="Search hidden programs" aria-label="Search hidden programs">
   <div id="ignoredList" class="game-list dlg-scroll"></div>
+</dialog>
+<dialog class="dialog list-dialog bench-dlg" id="benchDlg">
+  <div class="dlg-head"><h3>Benchmark tests <span class="unit" id="benchDlgCount"></span></h3><button class="btn sm ghost" data-close>Close</button></div>
+  <input type="search" class="dlg-search" id="benchSearch" placeholder="Search, like: poe 1080p fps>=120 hevc october" aria-label="Search tests" spellcheck="false">
+  <details class="bench-help">
+    <summary>How to search</summary>
+    <div class="hint">
+      <p>Words are combined: <code>poe 1080p hevc</code> finds tests that match all three. A comma means either: <code>res:1080,1440</code>. A minus leaves out: <code>-basic</code>. Quotes keep spaces: <code>game:"path of exile"</code>.</p>
+      <p>Fields: <code>game</code> <code>res</code> <code>fps</code> <code>codec</code> <code>bitrate</code> (Mbps) <code>capture</code> (window, display) <code>test</code> (full, basic) <code>on</code> <code>off</code> <code>low</code> <code>lowoff</code> (FPS with recording on/off) <code>cost</code> (% of frames lost) <code>fav</code>. Numbers take <code>&gt;</code> <code>&lt;</code> <code>&gt;=</code> <code>&lt;=</code>, like <code>on&gt;=144</code> or <code>cost&lt;5</code>.</p>
+      <p>Dates: <code>2026</code>, <code>october</code> or <code>oct</code>, <code>2026-10</code>, <code>2026-10-03</code>, <code>today</code>, <code>yesterday</code>, or a range like <code>date&gt;=2026-09</code> <code>date&lt;2026-10-15</code>.</p>
+    </div>
+  </details>
+  <div class="bench-dlg-bar">
+    <span class="hint" id="benchPickHint"></span>
+    <button class="btn sm ghost" id="benchPickClear" hidden>Clear ticks</button>
+    <button class="btn sm primary" id="benchCompare" disabled>Compare</button>
+  </div>
+  <div class="dlg-scroll bench-scroll"><table class="bench-table bench-list" id="benchList"></table></div>
 </dialog>
 <dialog class="dialog" id="updDlg">
   <form method="dialog">

@@ -31,6 +31,13 @@ fn e2s(e: impl std::fmt::Display) -> String {
 
 // ------------------------------------------------------------------ commands
 
+/// Windows' folder picker, owned by the main window. None = cancelled.
+#[tauri::command]
+async fn pick_folder(app: AppHandle, title: String, start: Option<String>) -> Option<String> {
+    let owner = app.get_webview_window("main").and_then(|w| w.hwnd().ok()).map(|h| h.0 as isize);
+    tauri::async_runtime::spawn_blocking(move || win::pick_folder(owner, &title, start.as_deref())).await.ok().flatten()
+}
+
 #[tauri::command]
 fn get_config(eng: Eng<'_>) -> Config {
     eng.cfg.lock().clone()
@@ -938,6 +945,7 @@ fn main() {
             bench_start,
             bench_cancel,
             bench_state,
+            pick_folder,
         ])
         .setup(move |app| {
             let cfg = Config::load();

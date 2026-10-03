@@ -54,6 +54,8 @@ pub struct Status {
     pub choices: Vec<Choice>,
     /// What a running benchmark is doing, e.g. "Benchmark: round 2 of 6 · recording off".
     pub bench: Option<String>,
+    /// The game recording with its favorite settings (its name), if any.
+    pub favorite: Option<String>,
 }
 
 #[derive(Clone)]
@@ -287,11 +289,14 @@ impl Engine {
         let cfg = self.cfg.lock().clone();
         let monitors = win::list_monitors();
         let (tracked, choices) = self.update_tracked(&cfg);
+        // A game with favorite settings records with those instead of the normal ones.
+        let (cfg, favorite) = cfg.for_game(tracked.as_ref().map(|t| t.exe.as_str()));
         let mut status = Status::default();
         status.warn = self.hotkey_err.lock().clone();
         status.choices = choices;
         status.target = tracked.as_ref().map(|t| t.exe.clone());
         status.bench = self.bench_note.lock().clone();
+        status.favorite = favorite;
         let mut dot: Option<overlay::Target> = None;
 
         let paused = self.bench_paused.load(SeqCst);

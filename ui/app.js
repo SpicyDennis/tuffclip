@@ -12,19 +12,13 @@ const store = {
   set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} },
 };
 
-// When the window is too narrow and the recording/status group drops to its own
-// row in the top bar, line its left edge up with the quick settings above it.
+// When the window is too narrow and the recording/status group drops below the
+// quick settings, it becomes a full-width second strip of the top bar (CSS .wrapped).
 function alignTopBar() {
-  const bar = $(".topbar"), quick = $("#quick"), right = $(".topright");
+  const quick = $("#quick"), right = $(".topright");
   right.classList.remove("wrapped");
-  right.style.marginLeft = right.style.maxWidth = "";
   const q = quick.getBoundingClientRect(), r = right.getBoundingClientRect();
-  if (r.top < q.bottom) return; // still on the same row
-  const b = bar.getBoundingClientRect();
-  const left = Math.max(0, q.left - b.left - parseFloat(getComputedStyle(bar).paddingLeft));
-  right.classList.add("wrapped");
-  right.style.marginLeft = left + "px";
-  right.style.maxWidth = `calc(100% - ${left}px)`;
+  if (r.top >= q.bottom) right.classList.add("wrapped");
 }
 {
   const ro = new ResizeObserver(alignTopBar);
@@ -296,6 +290,8 @@ function renderStatus(st) {
 
   if (pv.on) previewStatus();
   if (S.view === "bench") renderBenchWhat();
+  const favSig = `${st.favorite || ""}|${st.target || ""}`;
+  if (favSig !== S.favSig) { S.favSig = favSig; renderFavUi(); }
 
   const warn = st.warn || "";
   if (warn && warn !== S.warn) toast(warn, true);
@@ -369,7 +365,18 @@ const bench = {
 };
 if (!BENCH_LEN[bench.len]) bench.len = 4;
 if (!Array.isArray(bench.hist)) bench.hist = [];
-bench.result = bench.hist[0]?.r || null;
+bench.hist = bench.hist.filter((x) => x?.r?.finished_ms);
+const BENCH_KEEP = 300;
+bench.gone = store.get("clipr.benchGone", []); // deleted tests (ids)
+if (!Array.isArray(bench.gone)) bench.gone = [];
+bench.shown = null; // the test shown on the tab (null = the newest)
+bench.cmp = null;   // two test ids compared there instead
+bench.pick = [];    // ticked in the All tests dialog
+bench.q = "";
+bench.sort = store.get("clipr.benchSort", { k: "when", d: -1 });
+if (!bench.sort?.k) bench.sort = { k: "when", d: -1 };
+const findTest = (id) => bench.hist.find((x) => x.r.finished_ms === id)?.r || null;
+const shownTest = () => (bench.shown != null && findTest(bench.shown)) || bench.hist[0]?.r || null;
 
 const pctTxt = (x) => `${Math.abs(x) < 10 ? trimNum(Math.abs(x)) : Math.round(Math.abs(x))}%`;
 const fpsTxt = (x) => (x == null ? "–" : x < 100 ? trimNum(x) : String(Math.round(x)));
@@ -411,7 +418,7 @@ function renderBench() {
     $("#benchProgInfo").textContent = t;
   }
   renderBenchResult();
-  renderBenchHist();
+  renderBenchCount();
 }
 
 $("#benchAccess").addEventListener("click", (e) => {
@@ -505,11 +512,20 @@ function benchVerdict(r) {
   return out;
 }
 
+// ---- one test, or two side by side, in the result area
 function renderBenchResult() {
   const box = $("#benchResult");
-  const r = bench.result;
-  box.hidden = !r || bench.running;
-  if (!r || bench.running) return;
+  const cmp = bench.cmp && bench.cmp.map(findTest);
+  const r = shownTest();
+  box.hidden = bench.running || (!r && !cmp);
+  if (box.hidden) return;
+  if (cmp && cmp[0] && cmp[1]) renderCompare(box, cmp[0], cmp[1]);
+  else { bench.cmp = null; renderSingle(box, r); }
+}
+
+const whenTxt = (ms) => new Date(ms).toLocaleString([], { dateStyle: "medium", timeStyle: "short" });
+
+function renderSingle(box, r) {
   const v = benchVerdict(r);
   const pts = (a, b) => { const d = Math.round(a - b); return d === 0 ? "same" : `${d > 0 ? "+" : "−"}${Math.abs(d)} pts`; };
   const chg = (d) => (d == null ? "" : `${d < 0 ? "−" : "+"}${pctTxt(d)}`);
@@ -532,45 +548,468 @@ function renderBenchResult() {
   rows.push(["Video encoder", pc(r.on.encoder), pc(r.off.encoder), pts(r.on.encoder, r.off.encoder)]);
   rows.push(["CPU busy", pc(r.on.cpu_total), pc(r.off.cpu_total), pts(r.on.cpu_total, r.off.cpu_total)]);
   rows.push(["CPU used by TUFFClip", `${trimNum(r.on.cpu_rec)}%`, `${trimNum(r.off.cpu_rec)}%`, ""]);
-  const when = new Date(r.finished_ms).toLocaleString([], { dateStyle: "medium", timeStyle: "short" });
+  const newest = bench.hist[0]?.r.finished_ms === r.finished_ms;
+  const stats = r.frames
+    ? `<div class="bench-stats">
+        <div class="stat"><span class="label">Average FPS</span><span><b>${fpsTxt(r.on.fps)}</b> recording on</span><span><b>${fpsTxt(r.off.fps)}</b> off</span></div>
+        <div class="stat"><span class="label">1% low FPS</span><span><b>${fpsTxt(r.on.low1)}</b> recording on</span><span><b>${fpsTxt(r.off.low1)}</b> off</span></div>
+      </div>`
+    : "";
   box.innerHTML = `
+    <div class="bench-head"><span class="hint">${newest ? "Your latest test" : "Test"} · ${esc(whenTxt(r.finished_ms))}</span>${newest ? "" : `<button class="link" data-act="latest">Show the latest</button>`}</div>
     <div class="bench-verdict${v.sev >= 2 ? " attn" : ""}">
       <h3>${esc(v.title)}</h3>
       ${v.lines.map((l) => `<p class="hint">${esc(l)}</p>`).join("")}
     </div>
+    ${stats}
     <table class="bench-table">
       <thead><tr><th></th><th>Recording on</th><th>Recording off</th><th>Difference</th></tr></thead>
       <tbody>${rows.map((x) => `<tr><td>${x[0]}</td><td>${x[1]}</td><td>${x[2]}</td><td>${x[3]}</td></tr>`).join("")}</tbody>
     </table>
     ${v.advice.map((l) => `<p class="hint">${esc(l)}</p>`).join("")}
-    <p class="hint">${esc(r.game)} · ${esc(r.settings)} · ${r.access === "full" ? "Full" : "Basic"} test, ${Math.round(r.on.secs)} s on and ${Math.round(r.off.secs)} s off over ${r.rounds} rounds · ${esc(when)}</p>`;
+    <p class="hint">${esc(r.game)} · ${esc(r.settings)} · ${r.access === "full" ? "Full" : "Basic"} test, ${Math.round(r.on.secs)} s on and ${Math.round(r.off.secs)} s off over ${r.rounds} rounds</p>
+    <div class="bench-actions">${favBtn(r)}<button class="btn sm danger" data-act="del" data-id="${r.finished_ms}">Delete test</button></div>`;
 }
 
-function renderBenchHist() {
-  const h = bench.hist.slice(1);
-  $("#benchHistWrap").hidden = !h.length;
-  if (!h.length) return;
-  $("#benchHist").innerHTML = `<thead><tr><th>When</th><th>Game</th><th>Settings</th><th>Test</th><th>Result</th></tr></thead><tbody>${h
-    .map((x) => {
-      const r = x.r;
-      const when = new Date(r.finished_ms).toLocaleString([], { dateStyle: "short", timeStyle: "short" });
-      return `<tr><td>${esc(when)}</td><td>${esc(r.game)}</td><td>${esc(r.settings)}</td><td>${r.access === "full" ? "Full" : "Basic"}</td><td>${esc(benchVerdict(r).title)}</td></tr>`;
-    })
-    .join("")}</tbody>`;
+function renderCompare(box, a, b) {
+  if (a.finished_ms > b.finished_ms) [a, b] = [b, a]; // A is the older one
+  const A = testRow(a), B = testRow(b);
+  const short = (x) => `${x.resTxt} · ${x.fpsTxt} · ${x.codecTxt}`;
+  const costWords = (x) => {
+    if (x.cost == null) return "an unknown amount";
+    if (x.r.frames) return x.inNoise ? "no measurable frames" : `about ${pctTxt(x.cost)} of the frames`;
+    return `an estimated ${pctTxt(Math.max(0, x.cost))} of the frames`;
+  };
+  let title;
+  const lines = [];
+  if (A.cost == null || B.cost == null) {
+    title = "Can't compare what recording costs";
+    lines.push("One of these tests didn't have enough clean data to work out the cost. The numbers below still compare.");
+  } else {
+    const noise = Math.max(Math.hypot(A.noise ?? 0, B.noise ?? 0), 1);
+    const gap = A.cost - B.cost; // > 0: B loses fewer frames
+    title = Math.abs(gap) <= noise ? "About the same cost" : gap > 0 ? "Test B costs fewer frames" : "Test A costs fewer frames";
+    lines.push(`Recording cost ${costWords(A)} in test A (${short(A)}) and ${costWords(B)} in test B (${short(B)}).`);
+    if (Math.abs(gap) <= noise && Math.abs(gap) >= 0.5) lines.push(`The ${trimNum(Math.abs(gap))}-point gap is within the tests' normal ups and downs (give or take ${trimNum(noise)}).`);
+  }
+  if (a.frames && b.frames) lines.push(`With recording on, A ran at ${fpsTxt(a.on.fps)} fps and B at ${fpsTxt(b.on.fps)} fps; 1% lows ${fpsTxt(a.on.low1)} and ${fpsTxt(b.on.low1)}.`);
+  else lines.push("Only Full tests count real frames, so a Basic test's cost is an estimate from GPU load.");
+  if (A.game !== B.game) lines.push("These are different games, so the scenes differ as well as the settings.");
+
+  const pctChg = (x, y) => (x == null || y == null || !x ? "" : (() => { const d = ((y - x) / x) * 100; return Math.abs(d) < 0.05 ? "same" : `${d < 0 ? "−" : "+"}${pctTxt(d)}`; })());
+  const ptsChg = (x, y) => { if (x == null || y == null) return ""; const d = Math.round(y - x); return d === 0 ? "same" : `${d > 0 ? "+" : "−"}${Math.abs(d)} pts`; };
+  const pc = (x) => (x == null ? "–" : `${Math.round(x)}%`);
+  const fpsOf = (r, side, k) => (r.frames ? r[side][k] : null);
+  const rows = [
+    ["When", esc(whenTxt(a.finished_ms)), esc(whenTxt(b.finished_ms)), ""],
+    ["Game", esc(A.game), esc(B.game), ""],
+    ["Recorded", `${A.resTxt} · ${A.fpsTxt}`, `${B.resTxt} · ${B.fpsTxt}`, ""],
+    ["Encoding", `${A.codecTxt} · ${esc(A.rateTxt)}`, `${B.codecTxt} · ${esc(B.rateTxt)}`, ""],
+    ["Capture", A.captureTxt, B.captureTxt, ""],
+    ["Test", `${A.testTxt}, ${a.rounds} rounds`, `${B.testTxt}, ${b.rounds} rounds`, ""],
+  ];
+  const nums = [
+    ["Average FPS, recording on", fpsOf(a, "on", "fps"), fpsOf(b, "on", "fps"), "fps"],
+    ["Average FPS, recording off", fpsOf(a, "off", "fps"), fpsOf(b, "off", "fps"), "fps"],
+    ["1% low FPS, recording on", fpsOf(a, "on", "low1"), fpsOf(b, "on", "low1"), "fps"],
+    ["1% low FPS, recording off", fpsOf(a, "off", "low1"), fpsOf(b, "off", "low1"), "fps"],
+    ["Frames lost to recording", A.cost, B.cost, "cost"],
+    ["GPU busy, recording on", a.on.gpu_total, b.on.gpu_total, "pc"],
+    ["Video encoder, recording on", a.on.encoder, b.on.encoder, "pc"],
+    ["CPU busy, recording on", a.on.cpu_total, b.on.cpu_total, "pc"],
+  ];
+  for (const [l, x, y, k] of nums) {
+    if (k === "fps") { if (x == null && y == null) continue; rows.push([l, fpsTxt(x), fpsTxt(y), pctChg(x, y)]); }
+    else if (k === "cost") rows.push([l, A.costTxt, B.costTxt, ptsChg(x, y)]);
+    else rows.push([l, pc(x), pc(y), ptsChg(x, y)]);
+  }
+  box.innerHTML = `
+    <div class="bench-head"><span class="hint">Comparing two tests</span><button class="link" data-act="stopcmp">Stop comparing</button></div>
+    <div class="bench-verdict"><h3>${esc(title)}</h3>${lines.map((l) => `<p class="hint">${esc(l)}</p>`).join("")}</div>
+    <table class="bench-table cmp">
+      <thead><tr><th></th><th>Test A</th><th>Test B</th><th>B against A</th></tr></thead>
+      <tbody>${rows.map((x) => `<tr><td>${x[0]}</td><td>${x[1]}</td><td>${x[2]}</td><td>${x[3]}</td></tr>`).join("")}</tbody>
+    </table>
+    <div class="bench-actions">${favBtn(a, "A")}${favBtn(b, "B")}</div>`;
+}
+
+$("#benchResult").addEventListener("click", (e) => {
+  const b = e.target.closest("[data-act]");
+  if (!b) return;
+  const id = Number(b.dataset.id);
+  const act = b.dataset.act;
+  if (act === "latest") { bench.shown = null; renderBench(); }
+  else if (act === "stopcmp") { bench.cmp = null; renderBench(); }
+  else if (act === "fav") makeFav(findTest(id));
+  else if (act === "unfav") removeFav(findTest(id));
+  else if (act === "del") armClick(b, "Click again to delete", () => { deleteTest(id); renderBench(); });
+});
+
+// A first click arms a danger button; a second within 3 s acts.
+function armClick(btn, armedLabel, act) {
+  if (btn.classList.contains("armed")) { act(); return; }
+  const label = btn.textContent;
+  btn.classList.add("armed");
+  btn.textContent = armedLabel;
+  setTimeout(() => { if (btn.isConnected) { btn.classList.remove("armed"); btn.textContent = label; } }, 3000);
+}
+
+function renderBenchCount() {
+  const n = bench.hist.length;
+  $("#benchHistWrap").hidden = !n;
+  $("#benchCount").textContent = plural(n, "test");
 }
 
 function benchDone(r, quiet = false) {
   bench.running = false;
   bench.prog = null;
-  bench.result = r;
-  if (!bench.hist.some((x) => x.r.finished_ms === r.finished_ms)) {
+  if (!bench.gone.includes(r.finished_ms) && !bench.hist.some((x) => x.r.finished_ms === r.finished_ms)) {
     bench.hist.unshift({ r });
-    bench.hist = bench.hist.slice(0, 8);
+    bench.hist = bench.hist.slice(0, BENCH_KEEP);
     store.set("clipr.benchHist", bench.hist);
+    bench.shown = null;
+    bench.cmp = null;
   }
   renderBench();
+  if (benchDlg.open) renderBenchList();
   if (!quiet) toast(`Benchmark finished: ${benchVerdict(r).title.toLowerCase()}`);
 }
+
+function deleteTest(id) {
+  bench.hist = bench.hist.filter((x) => x.r.finished_ms !== id);
+  store.set("clipr.benchHist", bench.hist);
+  // bench_state still hands the newest result back when the window reopens: don't re-add it
+  bench.gone = [id, ...bench.gone.filter((x) => x !== id)].slice(0, 50);
+  store.set("clipr.benchGone", bench.gone);
+  if (bench.shown === id) bench.shown = null;
+  if (bench.cmp?.includes(id)) bench.cmp = null;
+  bench.pick = bench.pick.filter((x) => x !== id);
+}
+
+// ---- favorite settings: a game records with a test's settings instead of the normal ones
+// What a test recorded with. Tests from before 0.21 only have the summary text and a few numbers.
+function testRec(r) {
+  if (r.rec) return r.rec;
+  const m = (r.settings || "").match(/([\d.,]+)\s*(Mbps|kbps)/i);
+  const kbps = m ? Math.round(parseFloat(m[1].replace(/,/g, "")) * (/^m/i.test(m[2]) ? 1000 : 1)) : 30000;
+  return {
+    fps: r.rec_fps || 0,
+    height: r.height || 0,
+    codec: /hevc/i.test(r.settings || "") ? "hevc" : "h264",
+    bitrate_auto: true,
+    bitrate_kbps: kbps,
+    capture_method: r.window_capture ? "window" : "display",
+  };
+}
+function favText(f) {
+  return [
+    f.height ? `${f.height}p` : "native resolution",
+    f.fps ? `${f.fps} fps` : "native frame rate",
+    f.codec === "hevc" ? "HEVC" : "H.264",
+    f.bitrate_auto ? "automatic bitrate" : fmtRate(f.bitrate_kbps),
+    f.capture_method === "window" ? "game window" : "whole display",
+  ].join(" · ");
+}
+const sameFav = (a, b) => !!a && !!b && a.fps === b.fps && a.height === b.height && a.codec === b.codec
+  && a.capture_method === b.capture_method && a.bitrate_auto === b.bitrate_auto && (a.bitrate_auto || a.bitrate_kbps === b.bitrate_kbps);
+function favGame(r) {
+  const games = S.cfg?.games || [];
+  const exe = (r.exe || "").toLowerCase();
+  return (exe && games.find((g) => g.exe.toLowerCase() === exe)) || games.find((g) => g.name === r.game) || null;
+}
+const isFavTest = (r) => { const g = favGame(r); return !!g?.favorite && sameFav(g.favorite, testRec(r)); };
+function setGame(exe, patch) {
+  setCfg({ games: S.cfg.games.map((g) => (g.exe === exe ? { ...g, ...patch } : g)) });
+  renderFavUi();
+  if (S.view === "bench") renderBench();
+  if (benchDlg.open) renderBenchList();
+}
+function makeFav(r) {
+  const g = r && favGame(r);
+  if (!g) { toast(`Add ${r?.game || "this game"} to your game list first (Settings > Games).`, true); return; }
+  const fav = { ...testRec(r) };
+  setGame(g.exe, { favorite: fav, use_favorite: true });
+  toast(`${g.name} now records with ${favText(fav)}. Switch back in Settings > Games.`);
+}
+function removeFav(r) {
+  const g = r && favGame(r);
+  if (g) setGame(g.exe, { favorite: null });
+}
+function favBtn(r, which = "") {
+  const g = favGame(r);
+  const id = r.finished_ms;
+  const of = which ? `test ${which}'s settings` : "these";
+  if (!g) return `<button class="btn sm" disabled title="Add ${esc(r.game)} to the game list in Settings > Games first">Make ${of} ${esc(r.game)}'s favorite</button>`;
+  if (isFavTest(r)) return `<button class="btn sm" data-act="unfav" data-id="${id}" title="${esc(g.name)} records with ${which ? `test ${which}'s` : "these"} settings. Click to go back to the normal settings.">★ ${which ? `${which} is` : "These are"} ${esc(g.name)}'s favorite · Remove</button>`;
+  return `<button class="btn sm" data-act="fav" data-id="${id}" title="${esc(g.name)} will record with ${esc(favText(testRec(r)))}. Other games keep the normal settings.">Make ${of} ${esc(g.name)}'s favorite</button>`;
+}
+
+// The listed game being recorded with its favorite settings right now (if any).
+function activeFav() {
+  const st = S.status;
+  if (!st?.favorite || !st.target || !S.cfg) return null;
+  const t = st.target.toLowerCase();
+  return S.cfg.games.find((g) => g.exe.toLowerCase() === t && g.use_favorite && g.favorite) || null;
+}
+// Quick settings and the Capture note follow the favorite while one is in use.
+function renderFavUi() {
+  if (!S.cfg) return;
+  const g = activeFav();
+  $("#qFav").hidden = !g;
+  if (g) $("#qFav").title = `${g.name} records with its favorite settings. Resolution and frame rate here change them; the rest of your settings stay as they are.`;
+  renderHeight();
+  renderFps();
+  $("#favNote").hidden = !g;
+  if (g) $("#favNoteText").innerHTML = `<b>${esc(g.name)}</b> is recording with its favorite settings: ${esc(favText(g.favorite))}. The settings below apply to every other game.`;
+}
+$("#favNoteBtn").addEventListener("click", () => { const g = activeFav(); if (g) setGame(g.exe, { use_favorite: false }); });
+// Quick settings change the favorite while one is in use, else the normal settings.
+function quickPatch(p) {
+  const g = activeFav();
+  return g ? { games: S.cfg.games.map((x) => (x === g ? { ...x, favorite: { ...x.favorite, ...p } } : x)) } : p;
+}
+
+function renderFavs() {
+  const box = $("#favList");
+  if (!box || box.contains(document.activeElement) && document.activeElement.classList.contains("armed")) return;
+  const list = S.cfg.games.filter((g) => g.favorite);
+  if (!list.length) { box.innerHTML = `<div class="games-empty">No game has favorite settings yet.</div>`; return; }
+  box.innerHTML = list.map((g) => `<div class="game fav-row${g.use_favorite ? "" : " off"}" data-exe="${esc(g.exe)}">
+      <span class="name">${esc(g.name)}</span>
+      <span class="exe" title="${esc(favText(g.favorite))}">${esc(favText(g.favorite))}${g.use_favorite ? "" : " · not in use"}</span>
+      <button class="btn sm" data-k="toggle">${g.use_favorite ? "Use normal settings" : "Use favorite"}</button>
+      <button class="btn sm danger" data-k="remove">Remove</button>
+    </div>`).join("");
+}
+$("#favList").addEventListener("click", (e) => {
+  const b = e.target.closest("button");
+  const row = e.target.closest(".fav-row");
+  if (!b || !row) return;
+  const g = S.cfg.games.find((x) => x.exe === row.dataset.exe);
+  if (!g) return;
+  if (b.dataset.k === "toggle") setGame(g.exe, { use_favorite: !g.use_favorite });
+  else armClick(b, "Click again to remove", () => setGame(g.exe, { favorite: null }));
+});
+
+// ---- the "All tests" dialog: search, sort, tick two to compare
+const benchDlg = $("#benchDlg");
+const MONTHS = ["january", "february", "march", "april", "may", "june", "july", "august", "september", "october", "november", "december"];
+const pad2 = (n) => String(n).padStart(2, "0");
+const isoDay = (d) => `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+
+// One test as table cells, sort keys and searchable fields.
+function testRow(r) {
+  const d = new Date(r.finished_ms);
+  const s = r.settings || "";
+  const size = s.match(/(\d+)\s*×\s*(\d+)/);
+  const res = size ? Number(size[2]) : (r.height && r.height < r.src_h ? r.height : r.src_h) || 0;
+  const rate = s.match(/([\d.,]+)\s*(Mbps|kbps)/i);
+  const mbps = rate ? parseFloat(rate[1].replace(/,/g, "")) / (/^k/i.test(rate[2]) ? 1000 : 1) : null;
+  const codec = /hevc/i.test(s) ? "hevc" : "h264";
+  const noise = r.frames ? r.fps_noise : null;
+  let cost = null;
+  if (r.frames) cost = r.fps_diff == null ? null : -r.fps_diff;
+  else if (r.est_cost != null) cost = r.est_cost;
+  else if (!r.gpu_bound) cost = 0;
+  const inNoise = cost != null && r.frames && cost <= Math.max(noise ?? 0, 1);
+  const costTxt = cost == null ? "–" : r.frames ? (inNoise ? "none" : pctTxt(cost)) : `≈${pctTxt(Math.max(0, cost))}`;
+  const row = {
+    r, id: r.finished_ms, when: d, iso: isoDay(d),
+    game: r.game || "", exe: r.exe || "",
+    res, native: !r.height || r.height >= r.src_h, fps: r.rec_fps || 0,
+    codec, codecKeys: codec === "hevc" ? "hevc h265 h.265" : "h264 h.264 avc", mbps, capture: r.window_capture ? "window" : "display", test: r.access === "full" ? "full" : "basic",
+    on: r.frames ? r.on.fps : null, off: r.frames ? r.off.fps : null,
+    lowon: r.frames ? r.on.low1 : null, lowoff: r.frames ? r.off.low1 : null,
+    cost, noise, inNoise, costTxt,
+    verdict: benchVerdict(r).title, fav: isFavTest(r),
+    resTxt: res ? `${res}p` : "?", fpsTxt: `${r.rec_fps || "?"} fps`, codecTxt: codec === "hevc" ? "HEVC" : "H.264",
+    rateTxt: rate ? rate[0] : "?", captureTxt: r.window_capture ? "Window" : "Display", testTxt: r.access === "full" ? "Full" : "Basic",
+  };
+  row.hay = [
+    row.game, row.exe, `${res}p`, row.native ? "native" : "", `${row.fps}fps`, `${row.fps} fps`,
+    row.codecKeys, row.rateTxt, row.capture, row.test, row.verdict,
+    row.iso, row.iso.slice(0, 7), String(d.getFullYear()), MONTHS[d.getMonth()], d.toLocaleDateString(), row.fav ? "favorite favourite" : "",
+  ].join(" ").toLowerCase();
+  return row;
+}
+
+const QUERY_KEYS = {
+  game: "game", name: "game", exe: "exe",
+  res: "res", resolution: "res", height: "res",
+  fps: "fps", rate: "fps", codec: "codec", bitrate: "mbps", mbps: "mbps",
+  capture: "capture", method: "capture", test: "test", access: "test", type: "test",
+  on: "on", avg: "on", off: "off", low: "lowon", lowon: "lowon", lowoff: "lowoff",
+  cost: "cost", lost: "cost", date: "date", when: "date", day: "date", month: "date", year: "date",
+  fav: "fav", favorite: "fav", favourite: "fav", result: "verdict", verdict: "verdict",
+};
+const NUM_KEYS = ["res", "fps", "mbps", "on", "off", "lowon", "lowoff", "cost"];
+const unquote = (s) => s.replace(/^"(.*)"$/, "$1");
+
+// "poe 1080p fps>=120 -basic res:1080,1440 game:"path of exile"" -> conditions that must all hold
+function parseQuery(q) {
+  const toks = q.match(/-?[a-z]+(?:>=|<=|[:<>=])"[^"]*"|-?"[^"]*"|\S+/gi) || [];
+  return toks.map((t) => {
+    let neg = false;
+    if (t.length > 1 && t.startsWith("-") && !/^-\d/.test(t)) { neg = true; t = t.slice(1); }
+    const m = t.match(/^([a-z]+)(>=|<=|[:<>=])(.*)$/i);
+    const key = m && QUERY_KEYS[m[1].toLowerCase()];
+    if (key) return { neg, key, op: m[2] === "=" ? ":" : m[2], vals: unquote(m[3]).toLowerCase().split(",").map((v) => v.trim()).filter(Boolean) };
+    return { neg, text: unquote(t).toLowerCase() };
+  });
+}
+const monthOf = (v) => (v.length >= 3 ? MONTHS.findIndex((m) => m.startsWith(v)) : -1);
+function dateMatch(op, v, row) {
+  v = v.replace(/\//g, "-");
+  if (v === "today" || v === "yesterday") {
+    const d = new Date();
+    if (v === "yesterday") d.setDate(d.getDate() - 1);
+    v = isoDay(d);
+  }
+  const mi = monthOf(v);
+  if (mi >= 0) return op === ":" ? row.when.getMonth() === mi : false;
+  const p = v.match(/^(\d{4})(?:-(\d{1,2}))?(?:-(\d{1,2}))?$/);
+  if (!p) return false;
+  const k = [p[1], p[2] && pad2(p[2]), p[3] && pad2(p[3])].filter(Boolean).join("-");
+  // a partial date is a whole period: "> 2026-09" means after September
+  if (op === ":") return row.iso.startsWith(k);
+  if (op === ">=") return row.iso >= k;
+  if (op === ">") return row.iso > k + "￿";
+  if (op === "<") return row.iso < k;
+  return row.iso <= k + "￿";
+}
+function fieldMatch(key, op, v, row) {
+  if (key === "date") return dateMatch(op, v, row);
+  if (key === "fav") return /^(n|no|false|0|off)$/.test(v) ? !row.fav : row.fav;
+  if (key === "res" && v === "native") return row.native;
+  if (NUM_KEYS.includes(key)) {
+    const n = parseFloat(v.replace(/[^\d.\-]/g, ""));
+    const x = row[key];
+    if (!isFinite(n) || x == null) return false;
+    if (op === ":") return Math.round(x * 10) / 10 === n || Math.round(x) === Math.round(n);
+    return op === ">" ? x > n : op === "<" ? x < n : op === ">=" ? x >= n : x <= n;
+  }
+  if (key === "codec") return row.codecKeys.includes(v);
+  return String(row[key] ?? "").toLowerCase().includes(v);
+}
+function rowMatches(row, conds) {
+  return conds.every((c) => {
+    let ok;
+    if (c.text != null) {
+      const t = c.text;
+      ok = t === "today" || t === "yesterday" || /^\d{4}[-/]\d{1,2}/.test(t) ? dateMatch(":", t, row) : row.hay.includes(t);
+    } else ok = !c.vals.length || c.vals.some((v) => fieldMatch(c.key, c.op, v, row));
+    return c.neg ? !ok : ok;
+  });
+}
+
+const BENCH_COLS = [
+  ["when", "When", -1], ["game", "Game", 1], ["res", "Recorded", -1], ["enc", "Encoding", -1], ["capture", "Capture", 1], ["test", "Test", 1],
+  ["on", "Avg FPS on", -1], ["off", "Avg FPS off", -1], ["lowon", "1% low on", -1], ["lowoff", "1% low off", -1], ["cost", "Frames lost", 1],
+];
+function sortRows(rows) {
+  const { k, d } = bench.sort;
+  const key = {
+    when: (x) => x.id, game: (x) => x.game.toLowerCase(), res: (x) => x.res * 1000 + x.fps,
+    enc: (x) => (x.codec === "hevc" ? 1e6 : 0) + (x.mbps || 0), capture: (x) => x.capture, test: (x) => x.test,
+  }[k] || ((x) => x[k]);
+  return rows.sort((a, b) => {
+    const x = key(a), y = key(b);
+    if (x == null || y == null) return x == null ? (y == null ? b.id - a.id : 1) : -1; // empty cells last
+    return (x < y ? -1 : x > y ? 1 : b.id - a.id) * (x === y ? 1 : d);
+  });
+}
+
+function renderBenchList() {
+  const all = bench.hist.map((x) => testRow(x.r));
+  const conds = parseQuery(bench.q);
+  const rows = sortRows(all.filter((r) => rowMatches(r, conds)));
+  $("#benchDlgCount").textContent = rows.length === all.length ? plural(all.length, "test") : `${rows.length} of ${all.length}`;
+  const shown = shownTest()?.finished_ms;
+  const arrow = (k) => (bench.sort.k === k ? `<span class="sort">${bench.sort.d > 0 ? "▲" : "▼"}</span>` : "");
+  const head = `<thead><tr><th class="ck"></th>${BENCH_COLS.map(([k, l]) => `<th data-sort="${k}" class="${bench.sort.k === k ? "sorted" : ""}">${l}${arrow(k)}</th>`).join("")}<th class="act"></th></tr></thead>`;
+  const fv = (x) => (x == null ? `<span class="dim">–</span>` : fpsTxt(x));
+  const body = rows.map((x) => {
+    const g = favGame(x.r);
+    const fav = !g ? `<button class="btn sm ghost" disabled title="Add ${esc(x.game)} to the game list in Settings > Games first">Favorite</button>`
+      : x.fav ? `<button class="btn sm ghost on" data-act="unfav" title="${esc(g.name)} records with these settings. Click to go back to the normal settings.">★ Favorite</button>`
+      : `<button class="btn sm ghost" data-act="fav" title="Make these ${esc(g.name)}'s favorite settings">Favorite</button>`;
+    const costTitle = x.r.frames ? (x.inNoise ? `Within this test's normal ups and downs (give or take ${pctTxt(x.noise ?? 1)})` : "Fewer frames with recording on") : "Estimated from GPU load (Basic test)";
+    return `<tr data-id="${x.id}" class="${x.id === shown && !bench.cmp ? "shown" : ""}" title="${esc(x.verdict)}">
+      <td class="ck"><input type="checkbox" data-pick ${bench.pick.includes(x.id) ? "checked" : ""} aria-label="Pick for comparing"></td>
+      <td>${esc(x.when.toLocaleDateString([], { dateStyle: "medium" }))} <span class="dim">${esc(x.when.toLocaleTimeString([], { timeStyle: "short" }))}</span></td>
+      <td class="g">${esc(x.game)}</td>
+      <td>${x.resTxt} · ${x.fpsTxt}</td>
+      <td>${x.codecTxt} · ${esc(x.rateTxt)}</td>
+      <td>${x.captureTxt}</td>
+      <td>${x.testTxt}</td>
+      <td>${fv(x.on)}</td><td>${fv(x.off)}</td><td>${fv(x.lowon)}</td><td>${fv(x.lowoff)}</td>
+      <td title="${esc(costTitle)}">${x.costTxt}</td>
+      <td class="act">${fav}<button class="btn sm ghost danger" data-act="del">Delete</button></td>
+    </tr>`;
+  }).join("");
+  const empty = rows.length ? "" : `<tr><td colspan="${BENCH_COLS.length + 2}" class="none">${all.length ? "No test matches that search." : "No tests yet."}</td></tr>`;
+  $("#benchList").innerHTML = head + `<tbody>${body}${empty}</tbody>`;
+  renderPick();
+}
+function renderPick() {
+  bench.pick = bench.pick.filter((id) => findTest(id));
+  const n = bench.pick.length;
+  $("#benchPickHint").textContent = n === 0 ? "Tick two tests to compare them. Click a row to show that test on the Benchmark tab."
+    : n === 1 ? "Tick one more test to compare." : "Two tests ticked.";
+  $("#benchCompare").disabled = n !== 2;
+  $("#benchPickClear").hidden = !n;
+}
+
+$("#benchAll").addEventListener("click", () => {
+  bench.pick = bench.cmp ? [...bench.cmp] : [];
+  renderBenchList();
+  benchDlg.showModal();
+  $("#benchSearch").focus();
+});
+$("#benchSearch").addEventListener("input", (e) => {
+  bench.q = e.target.value;
+  renderBenchList();
+});
+$("#benchCompare").addEventListener("click", () => {
+  if (bench.pick.length !== 2) return;
+  bench.cmp = [...bench.pick];
+  benchDlg.close();
+  renderBench();
+  $("#benchResult").scrollIntoView({ block: "start", behavior: "smooth" });
+});
+$("#benchPickClear").addEventListener("click", () => { bench.pick = []; renderBenchList(); });
+benchDlg.addEventListener("click", (e) => {
+  if (e.target.dataset.close !== undefined || e.target === benchDlg) { benchDlg.close(); return; }
+  const th = e.target.closest("th[data-sort]");
+  if (th) {
+    const k = th.dataset.sort;
+    bench.sort = bench.sort.k === k ? { k, d: -bench.sort.d } : { k, d: BENCH_COLS.find((c) => c[0] === k)[2] };
+    store.set("clipr.benchSort", bench.sort);
+    renderBenchList();
+    return;
+  }
+  const tr = e.target.closest("tr[data-id]");
+  if (!tr) return;
+  const id = Number(tr.dataset.id);
+  if (e.target.matches("[data-pick]")) {
+    bench.pick = e.target.checked ? [...bench.pick.filter((x) => x !== id), id].slice(-2) : bench.pick.filter((x) => x !== id);
+    $$("#benchList [data-pick]").forEach((c) => (c.checked = bench.pick.includes(Number(c.closest("tr").dataset.id))));
+    renderPick();
+    return;
+  }
+  const b = e.target.closest("button");
+  if (b) {
+    if (b.dataset.act === "fav") makeFav(findTest(id));
+    else if (b.dataset.act === "unfav") removeFav(findTest(id));
+    else if (b.dataset.act === "del") armClick(b, "Sure?", () => { deleteTest(id); renderBenchList(); renderBench(); });
+    return;
+  }
+  if (e.target.closest("td.ck")) return;
+  bench.shown = id;
+  bench.cmp = null;
+  benchDlg.close();
+  renderBench();
+});
 
 // ------------------------------------------------------------------ library
 async function loadClips() {
@@ -1482,30 +1921,35 @@ const even = (x) => Math.max(2, Math.floor(x / 2) * 2);
 function renderHeight() {
   const m = curMonitor();
   const canScale = !S.ff || S.ff.gpu_scale !== false;
+  const fav = activeFav()?.favorite;
   const opts = [];
-  let cur = S.cfg.height;
+  let cur = S.cfg.height, q = fav ? fav.height : cur;
   if (m) {
     opts.push([0, `${m.width}×${m.height} (native)`]);
     const hs = [1440, 1080, 720, 480];
-    if (cur && cur < m.height && !hs.includes(cur)) hs.push(cur);
+    for (const h of [cur, q]) if (h && h < m.height && !hs.includes(h)) hs.push(h);
     hs.filter((h) => h < m.height).sort((a, b) => b - a)
       .forEach((h) => opts.push([h, `${even((m.width * h) / m.height)}×${h}`, !canScale]));
-    if (cur >= m.height) cur = 0; // as big as the display is the same as no scaling
+    // as big as the display is the same as no scaling
+    if (cur >= m.height) cur = 0;
+    if (q >= m.height) q = 0;
   } else {
     opts.push([0, "Native"], [1440, "1440p"], [1080, "1080p"], [720, "720p"]);
   }
-  $$("#height, #qHeight").forEach((el) => fillSelect(el, opts, cur));
+  fillSelect($("#height"), opts, cur);
+  fillSelect($("#qHeight"), opts, q);
 }
 
 function renderFps() {
   const hz = monitorHz();
+  const fav = activeFav()?.favorite;
   const opts = [[0, hz ? `${hz} fps (native)` : "Native"]];
   const list = [30, 60, 120, 144, 165, 240];
-  if (hz && !list.includes(hz)) list.push(hz);
-  if (S.cfg.fps && !list.includes(S.cfg.fps)) list.push(S.cfg.fps);
+  for (const f of [hz, S.cfg.fps, fav?.fps]) if (f && !list.includes(f)) list.push(f);
   list.sort((a, b) => a - b).filter((f) => !hz || f <= hz).forEach((f) => opts.push([f, `${f} fps`]));
-  const cur = hz && S.cfg.fps > hz ? hz : S.cfg.fps;
-  $$("#fps, #qFps").forEach((el) => fillSelect(el, opts, cur));
+  const cap = (f) => (hz && f > hz ? hz : f);
+  fillSelect($("#fps"), opts, cap(S.cfg.fps));
+  fillSelect($("#qFps"), opts, cap(fav ? fav.fps : S.cfg.fps));
   $("#fpsHint").textContent = !S.cfg.fps
     ? "Follows your display's refresh rate."
     : hz && S.cfg.fps > hz
@@ -1618,6 +2062,8 @@ function fillControls(force = false) {
   renderFps();
   renderHeight();
   renderGames();
+  renderFavs();
+  renderFavUi();
   renderIgnored();
   $("#hkKey").textContent = c.hotkey;
   set("#hkDlgInput", (el) => { if (!el.classList.contains("listening")) el.value = c.hotkey; });
@@ -1728,9 +2174,9 @@ $$("#audioSource button").forEach((b) => b.addEventListener("click", () => setCf
 onChange("#gentleSave", (el) => ({ gentle_save: el.checked }));
 onChange("#bufferRam", (el) => ({ buffer_in_ram: el.checked }));
 onChange("#height", (el) => ({ height: Number(el.value) }));
-onChange("#qHeight", (el) => ({ height: Number(el.value) }));
+onChange("#qHeight", (el) => quickPatch({ height: Number(el.value) }));
 onChange("#fps", (el) => ({ fps: Number(el.value) }));
-onChange("#qFps", (el) => ({ fps: Number(el.value) }));
+onChange("#qFps", (el) => quickPatch({ fps: Number(el.value) }));
 onChange("#qClip", (el) => ({ clip_seconds: Number(el.value) }));
 onChange("#bitrateManual", (el) => (el.checked ? { bitrate_auto: false, bitrate_kbps: autoRate() } : { bitrate_auto: true }));
 onChange("#encoder", (el) => ({ encoder: el.value }));
@@ -1757,7 +2203,11 @@ onChange("#audioOffset", (el) => {
   const v = numField(el, -2000, 2000);
   return v === undefined ? undefined : { audio_offset_ms: Math.round(v) };
 });
-onChange("#clipsDir", (el) => (el.value.trim() ? { clips_dir: el.value.trim() } : undefined));
+onChange("#clipsDir", (el) => {
+  if (!el.value.trim()) return;
+  setTimeout(() => loadClips().catch(() => {}), 800); // after the setting is saved
+  return { clips_dir: el.value.trim() };
+});
 onChange("#bufferDir", (el) => ({ buffer_dir: el.value.trim() || null }));
 onChange("#ffmpeg", (el) => ({ ffmpeg: el.value.trim() }));
 $("#ffmpeg").addEventListener("change", () => setTimeout(renderFfHints, 600));
@@ -2038,6 +2488,14 @@ async function renderStorage() {
     ? `${plural(s.done_count, "raw clip")} (${fmtSize(s.done_bytes)}) already ${s.done_count === 1 ? "has" : "have"} a trimmed version. Your exported clips aren't touched.`
     : "No raw clips have a trimmed version yet. TUFFClip remembers which ones you've exported.";
 }
+$("#pickClips").addEventListener("click", async () => {
+  const dir = await invoke("pick_folder", { title: "Choose where TUFFClip saves clips", start: S.cfg.clips_dir }).catch((e) => { toast(String(e), true); return null; });
+  if (!dir || dir === S.cfg.clips_dir) return;
+  setCfg({ clips_dir: dir });
+  await flush();
+  toast(`New clips go to ${dir}.`);
+  loadClips().catch(() => {});
+});
 $("#openClips").addEventListener("click", () => invoke("open_clips_folder", { kind: "all" }).catch((e) => toast(e, true)));
 $("#cleanupBtn").addEventListener("click", async () => {
   const s = await invoke("storage_info");

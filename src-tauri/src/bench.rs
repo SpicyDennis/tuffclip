@@ -124,6 +124,12 @@ pub struct BenchResult {
     #[serde(default)]
     pub game_own_queue: bool,
     pub finished_ms: u64,
+    /// The game's exe and the recording settings it was tested with, so a test can become
+    /// that game's favorite settings.
+    #[serde(default)]
+    pub exe: String,
+    #[serde(default)]
+    pub rec: Option<crate::config::Favorite>,
 }
 
 #[derive(Clone, Debug, Default, Serialize)]
@@ -642,15 +648,31 @@ fn run(app: &AppHandle, eng: &Arc<Engine>, req: &BenchRequest) -> Result<BenchRe
     if let Some(h) = &helper {
         h.command(&format!("pid {pid}"));
     }
-    let (settings, src_h, height, rec_fps, window_capture) = {
+    let (settings, src_h, height, rec_fps, window_capture, exe, rec) = {
         let st = eng.status();
         let spec = eng.spec();
+        let exe = st.target.clone().unwrap_or_default();
+        let (cfg, _) = eng.cfg.lock().for_game(st.target.as_deref());
+        let rec = crate::config::Favorite {
+            fps: cfg.fps,
+            height: cfg.height,
+            codec: cfg.codec,
+            bitrate_auto: cfg.bitrate_auto,
+            bitrate_kbps: cfg.bitrate_kbps,
+            capture_method: if spec.as_ref().is_some_and(|s| s.window.is_some()) {
+                crate::config::CaptureMethod::Window
+            } else {
+                crate::config::CaptureMethod::Display
+            },
+        };
         (
             st.summary,
             spec.as_ref().map(|s| s.src_h).unwrap_or(0),
             spec.as_ref().map(|s| s.height).unwrap_or(0),
             spec.as_ref().map(|s| s.fps).unwrap_or(0),
             spec.as_ref().is_some_and(|s| s.window.is_some()),
+            exe,
+            rec,
         )
     };
     // Tell the player it has started.
@@ -772,7 +794,10 @@ fn run(app: &AppHandle, eng: &Arc<Engine>, req: &BenchRequest) -> Result<BenchRe
         win::beep();
     }
 
-    Ok(summarize(req, &plan, &buckets, frames.as_deref(), freq, game, settings, src_h, height, rec_fps, window_capture))
+    let mut r = summarize(req, &plan, &buckets, frames.as_deref(), freq, game, settings, src_h, height, rec_fps, window_capture);
+    r.exe = exe;
+    r.rec = Some(rec);
+    Ok(r)
 }
 
 // ---------------------------------------------------------------- results
@@ -931,5 +956,7 @@ fn summarize(
         window_capture,
         game_own_queue,
         finished_ms: now_ms(),
+        exe: String::new(),
+        rec: None,
     }
 }

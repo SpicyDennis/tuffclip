@@ -91,7 +91,9 @@ The **Benchmark** tab measures what recording costs your game. Click *Start test
 | Basic (no admin) | GPU load (the counters Task Manager reads), the game's share of the GPU, the video encoder, CPU load. Estimates the frame cost: a GPU with room to spare loses no frames; a maxed-out one loses about the share recording took. |
 | Full | Also the game's real frames (average FPS and 1% lows), read from Windows' DXGI/D3D9 frame events like PresentMon. This needs admin rights or membership of the *Performance Log Users* group; without them Windows shows a UAC prompt each test, and only a small helper process runs as admin until the test ends. Vulkan/OpenGL games that don't present through DXGI fall back to the Basic readings. |
 
-The replay buffer is emptied when the test starts. The last 8 results are kept in the tab for comparing settings.
+The replay buffer is emptied when the test starts. Every result is kept (the newest 300): **All tests…** opens them in a table you can sort by any column and search. Search words are combined (`poe 1080p hevc`), a comma means either (`res:1080,1440`), a minus leaves out (`-basic`), and fields take comparisons (`fps>=120`, `on>144`, `cost<5`). Dates work as `2026`, `october`, `2026-10`, `2026-10-03`, `today` or `date>=2026-09`. Click a row to show that test on the tab, tick two to compare them side by side, or delete one.
+
+**Favorite settings:** any test can become its game's favorite (resolution, frame rate, codec, bitrate, capture method). That game then records with them while the normal settings stay as they are for every other game; the quick settings in the top bar show "★ Favorite" and change the favorite while it's in use. Settings > Games lists the favorites, each with *Use normal settings* / *Use favorite* and *Remove*; Settings > Capture also has *Use normal settings* while one is in use.
 
 ## Tuning
 

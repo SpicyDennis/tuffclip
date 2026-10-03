@@ -431,3 +431,38 @@ pub fn tie_to_app(child: &std::process::Child) {
         }
     }
 }
+
+/// Windows' own folder picker. `start`: the folder it opens in (if it exists). None = cancelled.
+pub fn pick_folder(owner: Option<isize>, title: &str, start: Option<&str>) -> Option<String> {
+    use windows::core::HSTRING;
+    use windows::Win32::System::Com::{
+        CoCreateInstance, CoInitializeEx, CoTaskMemFree, CoUninitialize, IBindCtx, CLSCTX_INPROC_SERVER,
+        COINIT_APARTMENTTHREADED,
+    };
+    use windows::Win32::UI::Shell::{
+        FileOpenDialog, IFileOpenDialog, IShellItem, SHCreateItemFromParsingName, FOS_FORCEFILESYSTEM, FOS_PICKFOLDERS,
+        SIGDN_FILESYSPATH,
+    };
+    unsafe {
+        let init = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+        let out = (|| -> windows::core::Result<String> {
+            let dlg: IFileOpenDialog = CoCreateInstance(&FileOpenDialog, None, CLSCTX_INPROC_SERVER)?;
+            dlg.SetOptions(dlg.GetOptions()? | FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM)?;
+            dlg.SetTitle(&HSTRING::from(title))?;
+            if let Some(s) = start.filter(|s| std::path::Path::new(s).is_dir()) {
+                if let Ok(item) = SHCreateItemFromParsingName::<_, _, IShellItem>(&HSTRING::from(s), None::<&IBindCtx>) {
+                    let _ = dlg.SetFolder(&item);
+                }
+            }
+            dlg.Show(HWND(owner.unwrap_or(0) as _))?;
+            let name = dlg.GetResult()?.GetDisplayName(SIGDN_FILESYSPATH)?;
+            let s = name.to_string();
+            CoTaskMemFree(Some(name.0 as _));
+            Ok(s?)
+        })();
+        if init.is_ok() {
+            CoUninitialize();
+        }
+        out.ok()
+    }
+}

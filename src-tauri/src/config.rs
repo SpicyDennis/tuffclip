@@ -71,6 +71,25 @@ pub struct GameEntry {
     /// This game's own indicator choice; None follows the global setting.
     #[serde(default)]
     pub indicator: Option<Indicator>,
+    /// This game's favorite recording settings (set from a benchmark test).
+    #[serde(default)]
+    pub favorite: Option<Favorite>,
+    /// Record with `favorite` (off = the normal settings, the favorite stays saved).
+    #[serde(default = "yes")]
+    pub use_favorite: bool,
+}
+
+/// Recording settings one game uses instead of the normal ones.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Favorite {
+    /// 0 = match the monitor's refresh rate.
+    pub fps: u32,
+    /// Output height; 0 = native resolution.
+    pub height: u32,
+    pub codec: Codec,
+    pub bitrate_auto: bool,
+    pub bitrate_kbps: u32,
+    pub capture_method: CaptureMethod,
 }
 
 fn yes() -> bool {
@@ -264,7 +283,31 @@ impl Config {
             if g.name.trim().is_empty() {
                 g.name = g.exe.trim_end_matches(".exe").to_string();
             }
+            if let Some(f) = &mut g.favorite {
+                if f.fps != 0 {
+                    f.fps = f.fps.clamp(10, 360);
+                }
+                f.bitrate_kbps = f.bitrate_kbps.clamp(2_000, 150_000);
+            }
         }
+    }
+
+    /// The settings to record `exe` with: its favorite, if it has one switched on.
+    /// Returns the game's name when a favorite applies.
+    pub fn for_game(&self, exe: Option<&str>) -> (Config, Option<String>) {
+        let fav = exe.filter(|_| self.mode == CaptureMode::Games).and_then(|e| {
+            self.games.iter().find(|g| g.exe.eq_ignore_ascii_case(e) && g.use_favorite && g.favorite.is_some())
+        });
+        let mut c = self.clone();
+        let Some(g) = fav else { return (c, None) };
+        let f = g.favorite.clone().unwrap();
+        c.fps = f.fps;
+        c.height = f.height;
+        c.codec = f.codec;
+        c.bitrate_auto = f.bitrate_auto;
+        c.bitrate_kbps = f.bitrate_kbps;
+        c.capture_method = f.capture_method;
+        (c, Some(g.name.clone()))
     }
 
     pub fn raw_dir(&self) -> PathBuf {
