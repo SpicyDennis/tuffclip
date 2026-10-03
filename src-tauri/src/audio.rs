@@ -143,14 +143,16 @@ pub fn spawn<W: Write + Send + 'static>(mut sink: W, tracks: &[Track], layout: &
         let max_q = per * 25; // keep at most 250 ms queued per track
         let mut bufs = vec![vec![0f32; per]; n];
         let mut bytes = Vec::with_capacity(per * n * 4);
-        let start = Instant::now();
-        let mut k: u64 = 0;
+        let mut due = Instant::now();
         while !stop.load(Relaxed) {
-            k += 1;
-            let due = start + Duration::from_millis(k * 10);
+            due += Duration::from_millis(10);
             let now = Instant::now();
             if due > now {
                 thread::sleep(due - now);
+            } else if now - due > Duration::from_secs(2) {
+                // Far behind (the PC was asleep, or this thread starved): carry on from now rather
+                // than pouring seconds of catch-up silence into ffmpeg at once.
+                due = now;
             }
             for (i, q) in queues.iter().enumerate() {
                 let mut q = q.lock();
@@ -192,6 +194,14 @@ fn run_source(src: Source, q: Queue, stop: &AtomicBool) {
     let mut last_err = String::new();
     while !stop.load(Relaxed) {
         let r = open(&src).and_then(|s| s.pump(&q, stop));
+        // In 100 ms steps: reopen right away when the source asked for it (new default device,
+        // Discord restarted), after 2 s when it failed, and look for Discord only every 10 s while
+        // it isn't running (each look lists every process).
+        let wait = match &r {
+            Ok(()) => 2,
+            Err(_) if src == Source::Discord => 100,
+            Err(_) => 20,
+        };
         if let Err(e) = r {
             let e = format!("{e:#}");
             if e != last_err {
@@ -199,7 +209,7 @@ fn run_source(src: Source, q: Queue, stop: &AtomicBool) {
                 last_err = e;
             }
         }
-        for _ in 0..20 {
+        for _ in 0..wait {
             if stop.load(Relaxed) {
                 break;
             }
@@ -331,10 +341,12 @@ unsafe fn process_client(pid: u32) -> Result<IAudioClient> {
         }
     };
     let waited = WaitForSingleObject(event, 5000);
-    let _ = CloseHandle(event);
     if waited != WAIT_OBJECT_0 {
+        // The handler may still fire later and signal this event, so it is left open (one
+        // handle) rather than closed and possibly reused by something else.
         bail!("Windows didn't open the program's audio in time");
     }
+    let _ = CloseHandle(event);
     let mut hr = HRESULT(0);
     let mut unk: Option<IUnknown> = None;
     op.GetActivateResult(&mut hr, &mut unk)?;
@@ -579,5 +591,68 @@ pub fn list_mics() -> Vec<MicInfo> {
             out.push(MicInfo { name: if name.is_empty() { "Microphone".into() } else { name }, id });
         }
         out
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn layout(titles: &[&str]) -> Layout {
+        Layout::new(&titles.iter().map(|t| track(Source::Desktop, t)).collect::<Vec<_>>())
+    }
+
+    #[test]
+    fn clip_keeps_only_tracks_that_were_heard() {
+        let one = layout(&["Desktop"]);
+        assert_eq!(one.pick(30, 100_000), vec![(0, "Desktop".to_string())]);
+
+        let l = layout(&["Game", "Discord", "Mic"]);
+        let end = 1_000_000;
+        // nothing heard: just the (silent) mix
+        assert_eq!(l.pick(30, end), vec![(0, "Game".to_string())]);
+        // only Discord heard: the mix is Discord alone, named so
+        l.heard[1].store(end - 5_000, Relaxed);
+        assert_eq!(l.pick(30, end), vec![(0, "Discord".to_string())]);
+        // game and Discord: mix + both parts; the mic, heard long before the clip, is left out
+        l.heard[0].store(end - 1_000, Relaxed);
+        l.heard[2].store(end - 120_000, Relaxed);
+        assert_eq!(l.pick(30, end), vec![(0, "Mix".into()), (1, "Game".into()), (2, "Discord".into())]);
+    }
+
+    #[test]
+    fn plan_picks_sources() {
+        let cfg = Config { mic: true, discord_track: true, ..Config::default() };
+        let t = plan(&cfg, Some(42));
+        assert_eq!(t.iter().map(|x| x.title.as_str()).collect::<Vec<_>>(), ["Game", "Discord", "Mic"]);
+        assert_eq!(t[0].source, Source::App(42));
+        // no game (desktop mode): everything you hear, no Discord track
+        let t = plan(&cfg, None);
+        assert_eq!(t.iter().map(|x| x.title.as_str()).collect::<Vec<_>>(), ["Desktop", "Mic"]);
+        assert!(plan(&Config { audio: false, ..cfg }, Some(1)).is_empty());
+    }
+
+    #[test]
+    fn conversion_resamples_and_folds_channels() {
+        // 44.1 kHz mono i16 -> 48 kHz stereo f32: about 48/44.1 as many frames, both sides equal
+        let mut c = Conv::new(false, 16, 1, 44_100);
+        let src: Vec<i16> = (0..4410).map(|i| ((i % 100) * 300) as i16).collect();
+        let mut out = Vec::new();
+        for chunk in src.chunks(441) {
+            unsafe { c.push(chunk.as_ptr() as *const u8, chunk.len(), false, &mut out) };
+        }
+        let frames = out.len() / 2;
+        assert!((4798..=4801).contains(&frames), "{frames}");
+        assert!(out.chunks(2).all(|lr| lr[0] == lr[1]));
+        // 48 kHz 5.1 f32: centre goes to both sides, no resampling
+        let mut c = Conv::new(true, 32, 6, 48_000);
+        let frame = [0.1f32, 0.2, 0.5, 0.0, 0.0, 0.0];
+        let mut out = Vec::new();
+        unsafe { c.push(frame.as_ptr() as *const u8, 1, false, &mut out) };
+        assert!((out[0] - (0.1 + 0.5 * 0.707)).abs() < 1e-6 && (out[1] - (0.2 + 0.5 * 0.707)).abs() < 1e-6);
+        // silent packets become zeros
+        let mut out = Vec::new();
+        unsafe { c.push(std::ptr::null(), 10, true, &mut out) };
+        assert_eq!(out, vec![0.0; 20]);
     }
 }

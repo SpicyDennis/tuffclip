@@ -12,6 +12,12 @@
       "runtimeExecutable": "python",
       "runtimeArgs": ["-m", "http.server", "5174", "--directory", "C:\\Users\\danfi\\AppData\\Local\\Temp\\claude\\C--Users-danfi-Desktop-clipr\\100f716c-0dd5-40aa-9eca-35d025c7b793\\scratchpad\\mock"],
       "port": 5174
+    },
+    {
+      "name": "tuffclip-mock",
+      "runtimeExecutable": "python",
+      "runtimeArgs": ["-m", "http.server", "5176", "--directory", "C:\\Users\\danfi\\AppData\\Local\\Temp\\claude\\C--Users-danfi-Desktop-tuffclip\\f626b81a-dbea-4871-8d15-4075d99d5a86\\scratchpad\\mock"],
+      "port": 5176
     }
   ]
 }

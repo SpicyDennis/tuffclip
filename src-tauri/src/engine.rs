@@ -100,6 +100,8 @@ pub struct Engine {
     /// The benchmark switched recording off for a while.
     bench_paused: AtomicBool,
     bench_note: Mutex<Option<String>>,
+    /// The monitors, read again every few seconds at most (DXGI enumeration isn't free).
+    monitors: Mutex<Option<(Instant, Vec<MonitorInfo>)>>,
     app: AppHandle,
 }
 
@@ -164,12 +166,34 @@ impl Engine {
             feed: Mutex::new(None),
             bench_paused: AtomicBool::new(false),
             bench_note: Mutex::new(None),
+            monitors: Mutex::new(None),
             app,
         }
     }
 
     pub fn status(&self) -> Status {
         self.status.lock().clone()
+    }
+
+    /// Something can be saved right now: a recording, or a closed game's buffer.
+    pub fn has_buffer(&self) -> bool {
+        let s = self.status.lock();
+        s.recording || s.held_until_ms.is_some()
+    }
+
+    /// The monitors, from a copy at most 5 s old. `hmon`: a monitor that must be in the list
+    /// (a game window moved to a screen that wasn't there before), else it is read again.
+    fn monitors(&self, hmon: Option<isize>) -> Vec<MonitorInfo> {
+        let mut c = self.monitors.lock();
+        if let Some((at, list)) = c.as_ref() {
+            let fresh = at.elapsed() < Duration::from_secs(5);
+            if fresh && hmon.is_none_or(|h| h == 0 || list.iter().any(|m| m.hmon == h)) {
+                return list.clone();
+            }
+        }
+        let list = win::list_monitors();
+        *c = Some((Instant::now(), list.clone()));
+        list
     }
 
     /// What the recorder is capturing right now (None when idle).
@@ -253,11 +277,20 @@ impl Engine {
 
     pub fn run_watcher(self: Arc<Self>) {
         let mut n: u64 = 0;
+        let mut last = SystemTime::now();
         loop {
+            // The PC slept (or the clock jumped): the capture and the sound pipe don't survive
+            // that in step, so start the recording over instead of keeping a broken buffer.
+            let now = SystemTime::now();
+            if now.duration_since(last).is_ok_and(|d| d > Duration::from_secs(30)) {
+                self.recorder.lock().stop();
+                *self.monitors.lock() = None;
+            }
+            last = now;
             // A panic in one tick must never end the watcher: that would silently stop recording.
             let _ = catch_unwind(AssertUnwindSafe(|| {
                 self.tick();
-                if n % 30 == 0 {
+                if n.is_multiple_of(30) {
                     self.check_hotkeys();
                 }
             }));
@@ -287,16 +320,17 @@ impl Engine {
 
     fn tick(&self) {
         let cfg = self.cfg.lock().clone();
-        let monitors = win::list_monitors();
         let (tracked, choices) = self.update_tracked(&cfg);
         // A game with favorite settings records with those instead of the normal ones.
         let (cfg, favorite) = cfg.for_game(tracked.as_ref().map(|t| t.exe.as_str()));
-        let mut status = Status::default();
-        status.warn = self.hotkey_err.lock().clone();
-        status.choices = choices;
-        status.target = tracked.as_ref().map(|t| t.exe.clone());
-        status.bench = self.bench_note.lock().clone();
-        status.favorite = favorite;
+        let mut status = Status {
+            warn: self.hotkey_err.lock().clone(),
+            choices,
+            target: tracked.as_ref().map(|t| t.exe.clone()),
+            bench: self.bench_note.lock().clone(),
+            favorite,
+            ..Default::default()
+        };
         let mut dot: Option<overlay::Target> = None;
 
         let paused = self.bench_paused.load(SeqCst);
@@ -305,8 +339,12 @@ impl Engine {
             self.recorder.lock().stop();
             status.game = tracked.as_ref().map(|t| t.name.clone());
             None
-        } else {
+        } else if cfg.mode == CaptureMode::Desktop || tracked.is_some() {
+            // Monitors are only read when there is something to record (not while waiting for a game).
+            let monitors = self.monitors(tracked.as_ref().map(|t| t.hmon));
             pick_target(&cfg, tracked.as_ref(), &monitors)
+        } else {
+            None
         };
         match target {
             Some((mon, game)) => {
@@ -358,7 +396,7 @@ impl Engine {
                             Ok(()) => {
                                 status.recording = true;
                                 dot = indicator_for(&cfg, tracked.as_ref(), &mon);
-                                if cfg.mode == CaptureMode::Games {
+                                if cfg.mode == CaptureMode::Games && !card {
                                     status.window_title = tracked.as_ref().and_then(|t| win::window_title(t.hwnd));
                                 }
                             }
@@ -847,5 +885,25 @@ fn pick_target(
             let game = tracked.map(|t| t.name.clone()).unwrap_or_else(|| "Desktop".into());
             Some((m, game))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn folder_names_are_safe() {
+        assert_eq!(sanitize_name("Path of Exile"), "Path of Exile");
+        assert_eq!(sanitize_name("a<b>c:d\"e/f\\g|h?i*j"), "a_b_c_d_e_f_g_h_i_j");
+        assert_eq!(sanitize_name(" trailing dots... "), "trailing dots");
+        assert_eq!(sanitize_name("..."), "Unknown");
+        assert_eq!(sanitize_name(""), "Unknown");
+    }
+
+    #[test]
+    fn crash_backoff_grows() {
+        assert!(backoff(1) < backoff(3) && backoff(3) < backoff(10));
+        assert_eq!(backoff(100), Duration::from_secs(45));
     }
 }

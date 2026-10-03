@@ -7,8 +7,8 @@ A lightweight replay-buffer clipper for Windows. No accounts, no ads, no telemet
 The expensive work never touches the CPU or system RAM:
 
 ```
-Game window ──gfxcapture (Windows Graphics Capture, frames stay in VRAM)──► scale_d3d11 (GPU, optional)
-(or monitor ──ddagrab)  ──► NVENC / AMF / QSV (dedicated encoder chip) ──► 2 s .ts segments (ring buffer)
+Game window ──gfxcapture (Windows Graphics Capture, frames stay in VRAM, scaled on the GPU if asked)
+(or monitor ──ddagrab)  ──► NVENC / AMF / QSV (dedicated encoder chip) ──► 2 s .ts segments (disk or RAM ring)
 Hotkey      ──► newest segments stitched with -c copy (no re-encode) ──► clip.mp4
 ```
 
@@ -20,16 +20,21 @@ This is the same pipeline ShadowPlay and SteelSeries Moments use, so the in-game
 - **ffmpeg is tied to TUFFClip with a Job Object**, so it can never be left running orphaned, even after a crash.
 - **Sound on separate tracks.** By default only the game's own sound is recorded (Windows per-app capture), with Discord and your microphone (optional) on tracks of their own; or pick "everything you hear" for one desktop track. All tracks go to ffmpeg through one pipe, paced in 10 ms chunks (silence-filled), so they stay in sync and ffmpeg never stalls. Each clip starts with a mix of all tracks, so it sounds right in any player; a Discord or mic track that stayed silent is left out of that clip.
 
-## Requirements
+## Get it
+
+Download `TUFFClip v1.0.0.exe` (or newer) from the [releases page](https://github.com/SpicyDennis/tuffclip/releases/latest) and run it. There is no installer: the exe is the whole app, so put it wherever you like. Windows SmartScreen may warn about an unknown publisher the first time (the exe isn't code-signed); choose *More info* > *Run anyway*.
+
+You need:
 
 1. **Windows 10 or 11** with an NVIDIA, AMD, or Intel GPU.
-2. **FFmpeg 8.0 or newer, full build** (needs `gfxcapture` and `ddagrab`, and `scale_d3d11` if you want to record below native resolution). TUFFClip offers to download one for you the first time you open it (button in the strip under the top bar, or Settings > Advanced); it is stored in `%LOCALAPPDATA%\TUFFClip\ffmpeg\`. Or get your own from https://www.gyan.dev/ffmpeg/builds/ (the "full" build) and put `ffmpeg.exe` on your PATH, or set its full path in Settings.
-3. **Rust** from https://rustup.rs.
-4. **Tauri CLI**: `cargo install tauri-cli --version "^2" --locked`
+2. **FFmpeg 8.0 or newer, full build** (needs `gfxcapture` and `ddagrab`; gfxcapture also does the scaling when you record below native resolution). TUFFClip offers to download one for you the first time you open it (button in the strip under the top bar, or Settings > Advanced); it is stored in `%LOCALAPPDATA%\TUFFClip\ffmpeg\`. Or get your own from https://www.gyan.dev/ffmpeg/builds/ (the "full" build) and put `ffmpeg.exe` on your PATH, or set its full path in Settings.
+WebView2 (for the window) is already on Windows 10/11. Nothing else is installed or needed.
 
-WebView2 is already on Windows 10/11. No Node.js or npm needed; the UI is plain HTML/CSS/JS.
+**Updates:** turn on Settings > About > *Check for updates* and TUFFClip asks GitHub every 15 minutes while it runs. A new version shows as a strip at the top; *Update* downloads it, checks its fingerprint, swaps the exe and restarts. Off (the default), TUFFClip never goes online on its own.
 
-## Build and run
+## Build from source
+
+You need **Rust** (https://rustup.rs) and the **Tauri CLI** (`cargo install tauri-cli --version "^2" --locked`). No Node.js or npm; the UI is plain HTML/CSS/JS.
 
 Double-click **`build.bat`** in the project folder. It installs the Tauri CLI if needed, compiles a release build, and creates a `build` folder right next to `src-tauri` and `ui`:
 
@@ -42,9 +47,11 @@ TUFFClip\
   build.bat
 ```
 
-`TUFFClip.exe` is self-contained (the UI is embedded), so you can move it anywhere or make a shortcut to it. FFmpeg is not part of the build; it lives in TUFFClip's data folder. Only one TUFFClip runs at a time: starting the exe again just opens the existing window.
+`TUFFClip v0.0.0.exe` is self-contained (the UI is embedded, the C runtime is linked in), so you can move it anywhere or make a shortcut to it. FFmpeg is not part of the build; it lives in TUFFClip's data folder. Only one TUFFClip runs at a time: starting the exe again just opens the existing window. `release.bat` publishes the built exe as a GitHub release (needs the GitHub CLI).
 
 For development with live reload instead: `cd src-tauri` then `cargo tauri dev`.
+
+**Tests:** `cargo test` (in `src-tauri`) runs the unit tests. `cargo test -- --ignored --test-threads=1` also runs the live ones: they record the screen, a window and sound with the real FFmpeg (on PATH) and an NVIDIA GPU, save clips from the RAM and disk buffers, and export them every way the Library can.
 
 ## Using it
 
@@ -63,7 +70,7 @@ The tray icon gets a red dot while recording (amber while a closed game's buffer
 
 Plug a USB HDMI capture card (e.g. the Guermok USB 3.0 one) into a blue USB 3 port and the console's dock into its HDMI input. Click **Capture card** in the top bar (or Settings > Capture card). The window shows the card's live picture and plays its sound, so you play on it; move the mouse to reach the card / sound / volume / fullscreen controls (F11 or double-click for fullscreen). While the window is open TUFFClip records it at the card's own resolution and frame rate (1080p60 for that card), and the clip hotkey saves as usual. Clips are filed under *Capture card* (rename it in Settings > Capture card).
 
-Close OBS or any other app using the card first: Windows lets only one program use a capture card at a time. The first time, Windows or WebView2 may ask to allow camera access (capture cards count as cameras).
+Close OBS or any other app using the card first: Windows lets only one program use a capture card at a time. The first time, the window asks before it looks for the card (*Look for capture card*), because Windows counts capture cards as cameras; TUFFClip never uses the camera anywhere else.
 
 ### Export modes
 
@@ -75,8 +82,9 @@ Close OBS or any other app using the card first: Windows lets only one program u
 | + "Exact size" | x264 / x265 two-pass on the CPU. Lands closest to the target. | Slower |
 | `.webm` | Always re-encoded as VP9 + Opus on the CPU. | Slow |
 | `.gif` | Looping, no sound. Frame rate (10-30 fps) and size (240p-720p) are chosen next to the Export button; up to 60 s. | Medium |
+| `.png` | A screenshot: the exact frame under the playhead, lossless, at the clip's own resolution. Saved in `Exports\<Game>\Screenshots\`. | Instant |
 
-"Auto" resolution drops to 1080p/720p/480p when the size budget is too small to look good. File type (`.mp4`, `.mkv`, `.mov`, `.webm`, `.gif`) and codec are chosen per export, next to the Export button. H.263 is not offered: it is a 1990s codec that only supports a handful of fixed frame sizes, compresses far worse than H.264 and has no GPU encoder.
+"Auto" resolution drops to 1080p/720p/480p when the size budget is too small to look good. File type (`.mp4`, `.mkv`, `.mov`, `.webm`, `.gif`, `.png`) and codec are chosen per export, next to the Export button. Exports run at full speed; tick *Low impact* to run them at idle priority on half the CPU threads while you game. H.263 is not offered: it is a 1990s codec that only supports a handful of fixed frame sizes, compresses far worse than H.264 and has no GPU encoder.
 
 **Sound levels:** under the trim bar the Library shows each sound track (game, Discord, mic) with its waveform, a Mute button and a level slider (0-200%; double-click for 100%). You hear the changes while watching, they're remembered per clip, and exports mix the tracks into one at those levels. With the levels untouched, exports keep the clip's own mix (no re-encode).
 
@@ -98,7 +106,7 @@ The replay buffer is emptied when the test starts. Every result is kept (the new
 ## Tuning
 
 - **Zero SSD writes:** set the buffer folder to a RAM disk (e.g. ImDisk). At 30 Mbps the buffer is about 4 MB/s and only ~(clip length + 6 s) of video.
-- **More FPS headroom:** lower the frame rate to 60, or record at 1080p on a 1440p monitor (needs FFmpeg 8's `scale_d3d11`).
+- **More FPS headroom:** lower the frame rate to 60, or record at 1080p on a 1440p monitor (scaled on the GPU by FFmpeg 8's `gfxcapture`). The Benchmark tab tells you whether it helps on your game.
 - **A/V out of sync:** adjust *Audio delay* in Settings (positive = audio later).
 
 ## Limitations / notes
@@ -113,8 +121,10 @@ The replay buffer is emptied when the test starts. Every result is kept (the new
 
 ```
 src-tauri/src/
-  main.rs      Tauri app, commands, single instance, window events, global hotkeys
+  main.rs      Tauri app, commands, single instance, window events, global hotkeys, self-heal
   tray.rs      tray icon (recording dot) and tooltip
+  overlay.rs   the recording dot on the game window (flashes on save)
+  preview.rs   the Preview tab's low-rate live view (a second ffmpeg, only while the tab is open)
   engine.rs    1 Hz watcher: which game is up, keep ffmpeg running, hold the buffer after a game closes, save clips
   recorder.rs  builds the ffmpeg capture command; stitches segments into clips
   audio.rs     WASAPI capture per track (game / Discord / desktop / mic) -> one paced multichannel f32 stream to ffmpeg stdin
@@ -125,7 +135,9 @@ src-tauri/src/
   library.rs   lists clips by game folder, remembers which raws were exported, storage totals
   win.rs       DXGI monitors, game windows, memory info, job object
   config.rs    settings (JSON)
-  ff.rs        ffmpeg helpers and capability check
+  ff.rs        ffmpeg helpers, capability check, FFmpeg download
+  update.rs    opt-in self-update from GitHub releases
+  live_tests.rs  end-to-end tests with the real FFmpeg and GPU (`cargo test -- --ignored`)
 ui/            index.html, style.css, app.js (no framework, no build step)
                capture.html/.css/.js: the capture card window
 ```

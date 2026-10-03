@@ -683,7 +683,6 @@ fn run(app: &AppHandle, eng: &Arc<Engine>, req: &BenchRequest) -> Result<BenchRe
 
     let mut buckets: Vec<Bucket> = Vec::new();
     let mut cpu = Cpu::default();
-    let mut elapsed_phases = 0u32;
     let measure = req.phase_secs - WARM_SECS;
     for (pi, &on) in plan.iter().enumerate() {
         let switched = pi == 0 || plan[pi - 1] != on;
@@ -698,7 +697,7 @@ fn run(app: &AppHandle, eng: &Arc<Engine>, req: &BenchRequest) -> Result<BenchRe
             if on { "on" } else { "off" }
         )));
         let phase_left = |done: u32| -> u32 {
-            let rest = total_secs.saturating_sub((elapsed_phases + 1) * req.phase_secs);
+            let rest = total_secs.saturating_sub((pi as u32 + 1) * req.phase_secs);
             rest + req.phase_secs.saturating_sub(done)
         };
 
@@ -766,7 +765,6 @@ fn run(app: &AppHandle, eng: &Arc<Engine>, req: &BenchRequest) -> Result<BenchRe
             prog.live_fps = helper.as_mut().and_then(|h| h.read().ok().and_then(|_| h.live_fps(now, freq)));
             emit(&prog);
         }
-        elapsed_phases += 1;
     }
 
     eng.bench_pause(false);
@@ -958,5 +956,36 @@ fn summarize(
         finished_ms: now_ms(),
         exe: String::new(),
         rec: None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn engine_names_parse() {
+        assert_eq!(
+            parse_engine("pid_1234_luid_0x0_0xD1B4_phys_0_eng_0_engtype_3D"),
+            Some((1234, "0x0_0xD1B4_phys_0_eng_0".into(), "3D".into()))
+        );
+        assert_eq!(parse_engine("garbage"), None);
+    }
+
+    #[test]
+    fn rounds_alternate_and_stats_hold() {
+        assert_eq!(phases(3), vec![true, false, false, true, true, false]);
+        let (m, n) = mean_range(&[-2.0, -4.0, -3.0]);
+        assert!((m.unwrap() + 3.0).abs() < 1e-9 && n.unwrap() > 0.0);
+        assert_eq!(mean_range(&[]), (None, None));
+        assert_eq!(mean_range(&[5.0]).1, None);
+        // 98 frames at 10 ms and two slow 50 ms ones: the 1% low sees the slow ones
+        let mut gaps = vec![10.0; 98];
+        gaps.extend([50.0, 50.0]);
+        let low = low1(&mut gaps).unwrap();
+        assert!(low < 100.0, "{low}");
+        assert_eq!(low1(&mut [10.0; 5]), None);
+        let ts: Vec<i64> = (0..10).map(|i| i * 100).collect();
+        assert_eq!(frames_in(&ts, 150, 450, 1000.0).0, 3);
     }
 }

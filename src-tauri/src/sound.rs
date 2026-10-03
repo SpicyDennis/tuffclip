@@ -105,7 +105,7 @@ fn decode(ffmpeg: &str, clip: &Path, i: usize, base: &Path) -> Result<(PathBuf, 
     // start so the track lines up with the video's timeline. Both branches of `asplit` share one
     // format, so it's fixed (stereo s16) before the split and the waveform is folded down after.
     let graph = format!(
-        "[0:a:{i}]aresample=async=1:first_pts=0,aformat=sample_fmts=s16:channel_layouts=stereo,asplit[p][w];         [w]pan=mono|c0=0.5*c0+0.5*c1,aresample={WAVE_HZ}[wave]"
+        "[0:a:{i}]aresample=async=1:first_pts=0,aformat=sample_fmts=s16:channel_layouts=stereo,asplit[p][w];[w]pan=mono|c0=0.5*c0+0.5*c1,aresample={WAVE_HZ}[wave]"
     );
     let mut c = ff::cmd_low(ffmpeg);
     c.args(["-hide_banner", "-loglevel", "error", "-y", "-i"])

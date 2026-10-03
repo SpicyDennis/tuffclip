@@ -69,6 +69,7 @@ function fmtTime(t) {
   return `${m}:${s.toFixed(1).padStart(4, "0")}`;
 }
 function fmtSize(b) {
+  if (!(b > 0)) return "0 KB";
   if (b >= 1e9) return (b / 1e9).toFixed(2) + " GB";
   if (b >= 1e6) return (b / 1e6).toFixed(1) + " MB";
   return Math.max(1, Math.round(b / 1e3)) + " KB";
@@ -142,7 +143,7 @@ $("#tabBench").addEventListener("click", () => showView("bench"));
 $("#expLow").checked = store.get("expLow", false);
 $("#expLow").addEventListener("change", (e) => store.set("expLow", e.target.checked));
 
-// ---- draggable top-bar tabs (File / Settings / Library); order is remembered
+// ---- draggable top-bar tabs; their order is remembered
 (() => {
   const bar = $("#tabs");
   const KEY = "clipr.tabOrder";
@@ -191,7 +192,7 @@ $("#expLow").addEventListener("change", (e) => store.set("expLow", e.target.chec
   };
   window.addEventListener("pointerup", end);
   window.addEventListener("pointercancel", end);
-  // a drag must not also count as a click (would switch tab / open File menu)
+  // a drag must not also count as a click (that would switch tab)
   window.addEventListener("click", (e) => {
     if (moved && e.target.closest("#tabs")) { e.stopPropagation(); e.preventDefault(); }
   }, true);
@@ -237,10 +238,6 @@ setInterval(() => { if (S.status?.held_until_ms && !S.status.recording) updateSt
 // Picking one switches Settings > Games / Desktop and the monitor too.
 function renderTarget(st = S.status) {
   if (!st || !S.cfg) return;
-  if (!S.monitors) {
-    S.monitors = [];
-    invoke("list_monitors").then((m) => { S.monitors = m || []; S.targetSig = ""; renderTarget(); }).catch(() => {});
-  }
   const choices = st.choices || [];
   const sel = $("#targetSel");
   const desktop = S.cfg.mode === "desktop";
@@ -385,7 +382,7 @@ function renderBenchWhat() {
   const st = S.status;
   const el = $("#benchWhat");
   if (bench.running && bench.prog?.game) el.innerHTML = `<b>${esc(bench.prog.game)}</b>${st?.summary ? " · " + esc(st.summary) : ""}`;
-  else if (st?.recording && st.game && !String(st.region || "").includes("capture card")) el.innerHTML = `<b>${esc(st.game)}</b> · ${esc(st.summary)}`;
+  else if (st?.recording && st.target && st.target !== "<capture card>") el.innerHTML = `<b>${esc(st.game)}</b> · ${esc(st.summary)}`;
   else el.textContent = "Your game with your current recording settings. Start one of your games; the test measures the game TUFFClip is recording.";
 }
 
@@ -1561,7 +1558,6 @@ const srcCodec = () => S.srcCodec || S.cfg?.codec || "h264";
 const effCodec = () => (S.mode === "original" ? S.codec : S.codec === "keep" ? "h264" : S.codec);
 // Original quality in a different codec: a quality-matched re-encode instead of a straight copy.
 const recoding = () => S.mode === "original" && !isWebm() && !isGif() && !isPng() && S.codec !== "keep" && S.codec !== srcCodec();
-const codecName = (c) => ({ h264: "H.264", hevc: "HEVC" }[c] || c);
 
 // What the clip itself weighs, so nothing can be exported bigger than "native".
 function native() {
@@ -1674,7 +1670,7 @@ function renderExport() {
       $("#customMb").classList.toggle("active", customMb);
       const bad = customMb && !sizeOk(S.mb, n);
       $("#customMb").classList.toggle("bad", bad);
-      if (!presets.length) { cap.hidden = false; cap.textContent = `This selection is only about ${fmtMb(n.mb)} already. Export the original instead.`; }
+      if (!presets.length && !(customMb && !bad)) { cap.hidden = false; cap.textContent = `This selection is only about ${fmtMb(n.mb)} already. Export the original instead.`; }
       else if (bad) { cap.hidden = false; cap.textContent = `Can't be as big as the clip already is (about ${fmtMb(n.mb)} for this selection).`; }
       valid = sizeOk(S.mb, n);
       if (valid) {
@@ -1691,7 +1687,7 @@ function renderExport() {
       $("#customRate").classList.toggle("active", customRate);
       const bad = customRate && !rateOk(S.kbps, n);
       $("#customRate").classList.toggle("bad", bad);
-      if (!presets.length) { cap.hidden = false; cap.textContent = `This clip's own bitrate is only about ${fmtRate(n.total)}. Export the original instead.`; }
+      if (!presets.length && !(customRate && !bad)) { cap.hidden = false; cap.textContent = `This clip's own bitrate is only about ${fmtRate(n.total)}. Export the original instead.`; }
       else if (bad) {
         cap.hidden = false;
         cap.textContent = S.kbps < 300 ? `Too low to look like anything. Try at least ${fmtRate(300)}.` : `Can't be higher than the clip's own bitrate (about ${fmtRate(n.cap)} of video).`;
@@ -1706,6 +1702,7 @@ function renderExport() {
       est = `About <b>${fmtMb(mbAt(n.total * 0.85, n.len))}</b>`;
       hint = ".webm can't hold this clip's video as it is, so it's re-encoded as VP9. That takes a while and keeps roughly the same quality in about 15% less space.";
     } else if (recode) {
+      const hevc = effCodec() === "hevc";
       const r = hevc ? HEVC_RATIO : 1 / HEVC_RATIO;
       const v = Math.max(500, n.total - 128) * r;
       est = `About <b>${fmtMb(mbAt(v + 128, n.len))}</b>`;
@@ -2150,6 +2147,7 @@ onChange("#captureName", (el) => {
   if (!name) { el.value = S.cfg.capture_name; return; }
   if (name === S.cfg.capture_name) return;
   if (folderName(name) !== folderName(S.cfg.capture_name)) S.renamedFrom.push(S.cfg.capture_name);
+  renameEverywhere({ exe: "" }, S.cfg.capture_name, name);
   return { capture_name: name };
 });
 const openCapture = () => invoke("open_capture").catch((e) => toast(String(e), true));
@@ -2283,6 +2281,35 @@ $("#gameList").addEventListener("input", (e) => {
     schedule(150);
   }
 });
+// The parts of a rename the UI owns: saved benchmark tests carry the game's name, and sound levels are
+// remembered per clip path (the clips' folder is renamed by the backend). File names never change.
+function renameEverywhere(g, from, to) {
+  const exe = (g.exe || "").toLowerCase();
+  let histChanged = false;
+  for (const x of bench.hist) {
+    if ((exe && (x.r.exe || "").toLowerCase() === exe) || x.r.game === from) {
+      if (x.r.game !== to) { x.r.game = to; histChanged = true; }
+    }
+  }
+  if (histChanged) {
+    store.set("clipr.benchHist", bench.hist);
+    if (typeof renderBench === "function") renderBench();
+    if (benchDlg.open) renderBenchList();
+  }
+  const [a, b] = [folderName(from), folderName(to)];
+  if (a === b) return;
+  const lv = store.get(LEVELS_KEY, {});
+  let moved = false;
+  for (const k of Object.keys(lv)) {
+    const m = k.match(/^(.*[\\/](?:Raw|Exports)[\\/])([^\\/]+)([\\/].*)$/i);
+    if (m && m[2].toLowerCase() === a.toLowerCase()) {
+      lv[m[1] + b + m[3]] = lv[k];
+      delete lv[k];
+      moved = true;
+    }
+  }
+  if (moved) store.set(LEVELS_KEY, lv);
+}
 // a new name is applied when you leave the field; the game's clips move to it
 $("#gameList").addEventListener("change", (e) => {
   const row = e.target.closest(".game");
@@ -2298,6 +2325,7 @@ $("#gameList").addEventListener("change", (e) => {
   if (!name) { e.target.value = g.name; return; }
   if (name === g.name) return;
   if (folderName(name) !== folderName(g.name)) S.renamedFrom.push(g.name);
+  renameEverywhere(g, g.name, name);
   g.name = name;
   schedule(150);
 });

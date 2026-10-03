@@ -8,6 +8,8 @@ mod etw;
 mod export;
 mod ff;
 mod library;
+#[cfg(test)]
+mod live_tests;
 mod overlay;
 mod preview;
 mod recorder;
@@ -109,8 +111,9 @@ struct AppInfo {
     updated: bool,
 }
 
+// async: these run `reg.exe`, which shouldn't hold up the window's thread.
 #[tauri::command]
-fn app_info() -> AppInfo {
+async fn app_info() -> AppInfo {
     AppInfo {
         version: env!("CARGO_PKG_VERSION").into(),
         build_date: env!("CLIPR_BUILD_DATE").into(),
@@ -170,7 +173,7 @@ fn set_autostart(on: bool) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn set_autostart_cmd(on: bool) -> Result<(), String> {
+async fn set_autostart_cmd(on: bool) -> Result<(), String> {
     set_autostart(on)
 }
 
@@ -764,23 +767,28 @@ fn start_key_poll(app: AppHandle) {
     fn down(vk: i32) -> bool {
         unsafe { GetAsyncKeyState(vk) as u16 & 0x8000 != 0 }
     }
+    let Some(eng) = app.try_state::<Arc<Engine>>().map(|e| e.inner().clone()) else { return };
     std::thread::spawn(move || {
         let mut held = [false; 2];
+        // The shortcuts as text and as keys; parsed again only when they change.
+        let mut text = (String::new(), String::new());
+        let mut keys = [None, None];
         loop {
             std::thread::sleep(std::time::Duration::from_millis(40));
-            let Some(eng) = app.try_state::<Arc<Engine>>() else { continue };
-            let (a, b) = {
-                let c = eng.cfg.lock();
-                (c.hotkey.clone(), c.hotkey2.clone())
-            };
-            let st = eng.status();
-            if !st.recording && st.held_until_ms.is_none() {
+            if !eng.has_buffer() {
                 held = [false; 2];
                 std::thread::sleep(std::time::Duration::from_millis(400));
                 continue;
             }
-            for (i, hk) in [a, b].iter().enumerate() {
-                let Some((c, al, sh, su, k)) = parse(hk) else { continue };
+            {
+                let c = eng.cfg.lock();
+                if c.hotkey != text.0 || c.hotkey2 != text.1 {
+                    text = (c.hotkey.clone(), c.hotkey2.clone());
+                    keys = [parse(&text.0), parse(&text.1)];
+                }
+            }
+            for (i, key) in keys.iter().enumerate() {
+                let Some((c, al, sh, su, k)) = *key else { continue };
                 let now = down(k)
                     && down(0x11) == c
                     && down(0x12) == al
@@ -801,7 +809,7 @@ fn start_update_poll(app: AppHandle) {
     std::thread::spawn(move || {
         let mut told = String::new();
         loop {
-            let on = app.try_state::<Arc<Engine>>().map_or(false, |e| e.cfg.lock().check_updates);
+            let on = app.try_state::<Arc<Engine>>().is_some_and(|e| e.cfg.lock().check_updates);
             if on {
                 // Answers from the saved result until it is 15 minutes old, so this costs nothing in between.
                 if let Ok(Some(rel)) = update::check(false) {
@@ -952,6 +960,7 @@ fn main() {
             let _ = std::fs::create_dir_all(&cfg.clips_dir);
             let _ = app.asset_protocol_scope().allow_directory(&cfg.clips_dir, true);
             let (hk1, hk2) = (cfg.hotkey.clone(), cfg.hotkey2.clone());
+            let ffmpeg = cfg.ffmpeg.clone();
             // Just updated: open the window so you see it worked.
             let start_hidden = !updated && (cfg.start_hidden || std::env::args().any(|a| a == "--hidden"));
 
@@ -967,6 +976,7 @@ fn main() {
             start_key_poll(app.handle().clone());
             std::thread::spawn(move || {
                 update::clean_up();
+                ff::clean_up(&config::data_dir().join("ffmpeg"), &ffmpeg);
                 // A new version may have a new name (update, new build): point "Start with Windows" at it.
                 // Not from dev builds, which would take the entry over from the real exe.
                 if updated || !cfg!(debug_assertions) {

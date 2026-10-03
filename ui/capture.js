@@ -109,7 +109,7 @@ async function start() {
     // until it is allowed here, it only offers to look for the card.
     const cfg = await invoke("get_config");
     if (!cfg.camera_access) {
-      showEmpty("Look for your capture card?", "Windows treats capture cards as cameras, so TUFFClip needs camera access to see yours. You can remove the access again in Settings > Capture card.", true, "Look for capture card");
+      showEmpty("Look for your capture card?", "Windows treats capture cards as cameras, so TUFFClip needs camera access to see yours. Only this window uses it.", true, "Look for capture card");
       return;
     }
     showEmpty("Looking for your capture card…");

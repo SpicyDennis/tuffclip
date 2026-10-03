@@ -218,3 +218,18 @@ pub fn clean_up() {
     let _ = std::fs::remove_file(dir.join(OLD_NAME));
     let _ = std::fs::remove_file(dir.join(PART_NAME));
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn versions_compare_as_numbers() {
+        assert!(parse_ver("v1.10.0") > parse_ver("1.9.9"));
+        assert!(parse_ver("1.0.0") > parse_ver("0.21.0"));
+        assert!(parse_ver("1.0.1") > parse_ver("1.0"));
+        assert_eq!(parse_ver(" V2.3.4 "), vec![2, 3, 4]);
+        assert!(!is_newer(env!("CARGO_PKG_VERSION")));
+        assert!(is_newer("999.0.0"));
+    }
+}

@@ -55,7 +55,7 @@ pub enum ExportCodec {
 /// HEVC needs roughly this share of H.264's bitrate for the same picture quality.
 pub const HEVC_RATIO: f64 = 0.65;
 
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 pub struct ExportRequest {
     pub path: String,
     pub start: f64,
@@ -212,7 +212,9 @@ pub fn export(cfg: &Config, req: &ExportRequest, progress: impl Fn(f64)) -> Resu
         bail!("Clip not found: {}", req.path);
     }
     if req.format == ExportFormat::Png {
-        return export_frame(cfg, req, &input);
+        let out = export_frame(cfg, req, &input)?;
+        progress(1.0);
+        return Ok(out);
     }
     let dur = req.end - req.start;
     if dur < 0.2 {
@@ -523,4 +525,43 @@ fn run_progress(mut c: Command, dur: f64, base: f64, span: f64, progress: &impl 
     }
     progress(base + span);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn req(levels: Option<Vec<Level>>) -> ExportRequest {
+        ExportRequest {
+            path: String::new(), start: 0.0, end: 1.0, mode: "original".into(), format: ExportFormat::Mp4,
+            codec: ExportCodec::Keep, target_mb: 0.0, target_kbps: 0, height: -1, precise: false, fps: 0,
+            name: String::new(), src_kbps: 0.0, low_impact: false, levels,
+        }
+    }
+    fn lv(v: &[(usize, f64)]) -> Option<Vec<Level>> {
+        Some(v.iter().map(|&(index, gain)| Level { index, gain }).collect())
+    }
+
+    #[test]
+    fn sound_levels_choose_copy_or_mix() {
+        assert!(matches!(Sound::of(&req(None)), Sound::Track(0)));
+        assert!(matches!(Sound::of(&req(lv(&[(1, 0.0), (2, 0.0)]))), Sound::None));
+        assert!(matches!(Sound::of(&req(lv(&[(1, 1.0), (2, 0.0)]))), Sound::Track(1)));
+        let mix = Sound::of(&req(lv(&[(1, 9.0), (2, 0.5)])));
+        assert!(mix.needs_encode());
+        let m = mix.maps().join(" ");
+        assert!(m.contains("[0:a:1]volume=4.000[l0];[0:a:2]volume=0.500[l1];[l0][l1]amix=inputs=2:normalize=0"), "{m}");
+        let one = Sound::of(&req(lv(&[(0, 0.5)]))).maps().join(" ");
+        assert!(one.contains("[l0]anull[snd]"), "{one}");
+    }
+
+    #[test]
+    fn names_are_cleaned() {
+        assert_eq!(clean_stem("  my clip.mp4 ", "mp4"), "my clip");
+        assert_eq!(clean_stem("a/b:c", "mp4"), "a_b_c");
+        assert_eq!(clean_stem("   ", "mp4"), "");
+        assert_eq!(clean_stem(&"x".repeat(300), "mp4").len(), 120);
+        assert_eq!(auto_height(800), 480);
+        assert_eq!(auto_height(8000), 0);
+    }
 }

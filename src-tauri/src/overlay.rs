@@ -1,5 +1,5 @@
 //! The "recording" indicator: one small, clearly visible, click-through dot in a corner of the recorded
-//! window. It lives on its own tiny thread that only moves a 12 px window, so it costs nothing.
+//! window. It lives on its own tiny thread that only moves a 22 px window, so it costs nothing.
 use crate::config::Indicator;
 use crate::win;
 use parking_lot::Mutex;
@@ -62,7 +62,7 @@ fn spot(t: &Target) -> Option<(i32, i32)> {
     let (x, y, w, h) = match t.hwnd {
         Some(h) => {
             let g = win::window_geometry(h)?;
-            if g.minimized || win::foreground().map(|f| f.hwnd) != Some(h) {
+            if g.minimized || win::foreground_hwnd() != Some(h) {
                 return None;
             }
             (g.x, g.y, g.w as i32, g.h as i32)

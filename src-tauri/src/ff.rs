@@ -128,9 +128,30 @@ pub fn probe_codec(ffmpeg: &str, file: &std::path::Path) -> String {
     let text = String::from_utf8_lossy(&out.stderr);
     text.lines()
         .find_map(|l| l.split_once("Video: ").map(|(_, r)| r))
-        .and_then(|r| r.split(|c: char| c == ' ' || c == ',' || c == '(').next())
+        .and_then(|r| r.split([' ', ',', '(']).next())
         .unwrap_or("")
         .to_lowercase()
+}
+
+/// Remove what earlier FFmpeg downloads left in `dir`: a half-finished download, and copies the
+/// settings no longer use (a download made while the old ffmpeg.exe was running is saved beside
+/// it as ffmpeg-<n>.exe). Only when `current` (the ffmpeg in the settings) is one of them; a copy
+/// still running can't be deleted and goes next time.
+pub fn clean_up(dir: &std::path::Path, current: &str) {
+    let _ = std::fs::remove_file(dir.join("ffmpeg.zip"));
+    let _ = std::fs::remove_dir_all(dir.join("unpack"));
+    let canon = |p: &std::path::Path| std::fs::canonicalize(p).ok();
+    let Some(cur) = canon(std::path::Path::new(current)) else { return };
+    if cur.parent() != canon(dir).as_deref() {
+        return; // the settings point at an FFmpeg of your own: leave the downloaded ones alone
+    }
+    let Ok(rd) = std::fs::read_dir(dir) else { return };
+    for e in rd.flatten() {
+        let name = e.file_name().to_string_lossy().to_lowercase();
+        if name.starts_with("ffmpeg") && name.ends_with(".exe") && canon(&e.path()).as_ref() != Some(&cur) {
+            let _ = std::fs::remove_file(e.path());
+        }
+    }
 }
 
 const FFMPEG_URL: &str =

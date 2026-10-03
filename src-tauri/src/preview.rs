@@ -105,3 +105,15 @@ fn b64(data: &[u8]) -> String {
     }
     s
 }
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn base64_matches_the_standard() {
+        assert_eq!(super::b64(b""), "");
+        assert_eq!(super::b64(b"f"), "Zg==");
+        assert_eq!(super::b64(b"fo"), "Zm8=");
+        assert_eq!(super::b64(b"foobar"), "Zm9vYmFy");
+        assert_eq!(super::b64(&[0xff, 0xd8, 0xff]), "/9j/");
+    }
+}

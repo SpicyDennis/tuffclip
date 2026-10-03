@@ -325,3 +325,78 @@ impl Config {
             .unwrap_or_else(|| data_dir().join("buffer"))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn game(exe: &str, name: &str) -> GameEntry {
+        GameEntry { exe: exe.into(), name: name.into(), enabled: true, indicator: None, favorite: None, use_favorite: true }
+    }
+
+    #[test]
+    fn auto_bitrate_follows_size_rate_and_codec() {
+        let base = auto_bitrate(1920, 1080, 60, Codec::H264);
+        assert_eq!(base % 500, 0);
+        assert!(auto_bitrate(2560, 1440, 60, Codec::H264) > base);
+        assert!(auto_bitrate(1920, 1080, 144, Codec::H264) > base);
+        assert!(auto_bitrate(1920, 1080, 60, Codec::Hevc) < base);
+        // never below the floor or above the ceiling
+        assert_eq!(auto_bitrate(160, 90, 10, Codec::Hevc), 4_000);
+        assert_eq!(auto_bitrate(7680, 4320, 240, Codec::H264), 150_000);
+        // fps 0 must not divide by zero
+        assert!(auto_bitrate(1920, 1080, 0, Codec::H264) >= 4_000);
+    }
+
+    #[test]
+    fn sanitize_clamps_and_cleans() {
+        let mut c = Config {
+            fps: 1000,
+            clip_seconds: 1,
+            bitrate_kbps: 1,
+            audio_kbps: 9999,
+            audio_offset_ms: -9999,
+            hold_minutes: 600,
+            ffmpeg: "  ".into(),
+            capture_name: " ".into(),
+            ignored_exes: vec![" a.exe ".into(), "A.EXE".into(), "".into()],
+            games: vec![game(" game.exe ", ""), game("  ", "x")],
+            ..Config::default()
+        };
+        c.sanitize();
+        assert_eq!((c.fps, c.clip_seconds, c.bitrate_kbps, c.audio_kbps), (360, 5, 2_000, 320));
+        assert_eq!((c.audio_offset_ms, c.hold_minutes), (-2_000, 60));
+        assert_eq!(c.ffmpeg, "ffmpeg");
+        assert_eq!(c.capture_name, "Capture card");
+        assert_eq!(c.ignored_exes, vec!["a.exe".to_string()]);
+        assert_eq!(c.games.len(), 1);
+        assert_eq!((c.games[0].exe.as_str(), c.games[0].name.as_str()), ("game.exe", "game"));
+    }
+
+    #[test]
+    fn old_settings_files_still_load() {
+        // A settings file from an old version: missing keys get defaults, the old alias works,
+        // unknown keys are ignored.
+        let c: Config =
+            serde_json::from_str(r#"{"mode":"desktop","export_gentle":false,"games":[{"exe":"a.exe","name":"A"}],"unknown":1}"#).unwrap();
+        assert_eq!(c.mode, CaptureMode::Desktop);
+        assert!(!c.gentle_save);
+        assert!(c.games[0].enabled && c.games[0].use_favorite);
+        assert_eq!(c.hotkey, "Alt+F10");
+    }
+
+    #[test]
+    fn favorite_applies_only_to_its_game_in_games_mode() {
+        let fav = Favorite { fps: 60, height: 720, codec: Codec::H264, bitrate_auto: false, bitrate_kbps: 9_000, capture_method: CaptureMethod::Display };
+        let mut c = Config { fps: 0, height: 0, games: vec![GameEntry { favorite: Some(fav), ..game("Game.exe", "Game") }], ..Config::default() };
+        let (g, name) = c.for_game(Some("game.EXE"));
+        assert_eq!((g.fps, g.height, g.bitrate_kbps, name.as_deref()), (60, 720, 9_000, Some("Game")));
+        assert_eq!(g.capture_method, CaptureMethod::Display);
+        assert!(c.for_game(Some("other.exe")).1.is_none());
+        c.games[0].use_favorite = false;
+        assert!(c.for_game(Some("game.exe")).1.is_none());
+        c.games[0].use_favorite = true;
+        c.mode = CaptureMode::Desktop;
+        assert!(c.for_game(Some("game.exe")).1.is_none());
+    }
+}

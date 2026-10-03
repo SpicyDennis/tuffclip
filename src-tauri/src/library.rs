@@ -34,7 +34,7 @@ pub fn list(root: &Path, raw: bool) -> Vec<Clip> {
             push(&mut v, p, "Unsorted", raw);
         }
     }
-    v.sort_by(|a, b| b.modified.cmp(&a.modified));
+    v.sort_by_key(|c| std::cmp::Reverse(c.modified));
     v
 }
 
@@ -190,8 +190,9 @@ pub fn rename_game(cfg: &Config, old: &str, new: &str) {
                 if lp == na {
                     return b.clone();
                 }
-                if lp.starts_with(&format!("{na}\\")) && p.len() >= a.len() {
-                    return format!("{b}{}", &p[a.len()..]);
+                // `get`: a path spelled with other letter cases may not split at the same byte.
+                if let Some(rest) = p.get(a.len()..).filter(|_| lp.starts_with(&format!("{na}\\"))) {
+                    return format!("{b}{rest}");
                 }
             }
             p.to_string()

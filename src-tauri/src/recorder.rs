@@ -21,12 +21,14 @@ use std::collections::VecDeque;
 use std::fs::{self, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Child, ChildStdout, Stdio};
+use std::process::{Child, ChildStderr, ChildStdout, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
 
 pub const SEG_SECS: u32 = 2;
+/// At most this much of one ffmpeg run's messages goes into ffmpeg.log.
+const LOG_CAP: u64 = 2 << 20;
 
 const TS_PACKET: usize = 188;
 /// ffmpeg's mpegts muxer puts the first output stream (our video) on this PID.
@@ -274,6 +276,27 @@ impl RamInner {
     }
 }
 
+/// ffmpeg's messages into the log, up to `LOG_CAP` per run: a warning repeated for hours must not
+/// fill the disk. Past the cap it keeps reading (and dropping) so ffmpeg never blocks on the pipe.
+fn copy_log(mut err: ChildStderr, mut log: fs::File) {
+    let mut buf = [0u8; 4096];
+    let mut written = 0u64;
+    loop {
+        let n = match err.read(&mut buf) {
+            Ok(0) | Err(_) => break,
+            Ok(n) => n,
+        };
+        if written < LOG_CAP {
+            let _ = log.write_all(&buf[..n]);
+            written += n as u64;
+            if written >= LOG_CAP {
+                let _ = writeln!(log, "
+[TUFFClip] ffmpeg keeps writing messages; the rest of this run's are left out.");
+            }
+        }
+    }
+}
+
 fn read_ram(mut out: ChildStdout, ram: Arc<RamBuf>) {
     let mut buf = vec![0u8; TS_PACKET * 512];
     let mut carry: Vec<u8> = Vec::with_capacity(TS_PACKET * 600);
@@ -391,12 +414,15 @@ impl Recorder {
         let mut cmd = ff::cmd(&spec.ffmpeg);
         cmd.args(&args)
             .stdout(if spec.ram { Stdio::piped() } else { Stdio::null() })
-            .stderr(Stdio::from(log))
+            .stderr(Stdio::piped())
             .stdin(if spec.tracks.is_empty() { Stdio::null() } else { Stdio::piped() });
         let mut child = cmd
             .spawn()
             .with_context(|| format!("Couldn't start ffmpeg (\"{}\"). Is it installed?", spec.ffmpeg))?;
         win::tie_to_app(&child);
+        if let Some(err) = child.stderr.take() {
+            std::thread::spawn(move || copy_log(err, log));
+        }
 
         if spec.ram {
             let ram = Arc::new(RamBuf::new(spec.segments as usize));
@@ -725,4 +751,122 @@ pub fn save_ram(ffmpeg: &str, ram: &RamBuf, seconds: u32, out: &Path, gentle: bo
         bail!("ffmpeg failed: {}", ff::tail(&String::from_utf8_lossy(&o.stderr)));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::Config;
+
+    fn monitor(w: u32, h: u32) -> MonitorInfo {
+        MonitorInfo { id: "m".into(), label: "m".into(), adapter: 0, output: 0, width: w, height: h, x: 0, y: 0, refresh_hz: 144, primary: true, hmon: 7 }
+    }
+    fn geom(x: i32, y: i32, w: u32, h: u32) -> win::WinGeom {
+        win::WinGeom { x, y, w, h, hmon: 7, minimized: false }
+    }
+
+    #[test]
+    fn crop_follows_the_window() {
+        let m = monitor(2560, 1440);
+        assert_eq!(crop_for(&m, &geom(0, 0, 2560, 1440)), None, "fullscreen records the whole display");
+        assert_eq!(crop_for(&m, &geom(101, 51, 1281, 721)), Some(Crop { x: 100, y: 50, w: 1280, h: 720 }));
+        assert_eq!(crop_for(&m, &geom(5000, 0, 800, 600)), None, "off this monitor");
+        // tiny windows grow to what encoders accept, and stay on screen
+        let c = crop_for(&m, &geom(2500, 1400, 40, 30)).unwrap();
+        assert!(c.w >= 256 && c.h >= 144 && c.x + c.w <= 2560 && c.y + c.h <= 1440, "{c:?}");
+        // partly off screen: clipped to the monitor
+        let c = crop_for(&m, &geom(-200, -100, 1000, 800)).unwrap();
+        assert_eq!((c.x, c.y, c.w, c.h), (0, 0, 800, 700));
+    }
+
+    fn spec(cfg: &Config, crop: Option<Crop>, window: Option<(isize, u32, u32)>) -> RecordSpec {
+        RecordSpec::new(&Config { ffmpeg: "no-such-ffmpeg".into(), ..cfg.clone() }, &monitor(2560, 1440), crop, window)
+    }
+    fn joined(s: &RecordSpec) -> String {
+        build_args(s).join(" ")
+    }
+
+    #[test]
+    fn capture_filter_per_mode() {
+        let cfg = Config::default();
+        let native = joined(&spec(&cfg, None, None));
+        assert!(native.contains("ddagrab=output_idx=0:framerate=144"), "{native}");
+        let window = joined(&spec(&cfg, None, Some((1234, 1280, 720))));
+        assert!(window.contains("gfxcapture=hwnd=1234") && window.contains("width=-2:height=-2"), "{window}");
+        let small = Config { height: 720, ..cfg.clone() };
+        let down = joined(&spec(&small, Some(Crop { x: 100, y: 50, w: 1920, h: 1080 }), None));
+        assert!(down.contains("gfxcapture=hmonitor=7"), "{down}");
+        assert!(down.contains("crop_left=100:crop_top=50:crop_right=540:crop_bottom=310"), "{down}");
+        assert!(down.contains("width=1280:height=720"), "{down}");
+        let win_down = joined(&spec(&small, None, Some((1, 1920, 1080))));
+        assert!(win_down.contains("width=1280:height=720"), "{win_down}");
+        let qsv = joined(&spec(&Config { encoder: Encoder::Qsv, ..cfg.clone() }, None, None));
+        assert!(qsv.contains("hwmap=derive_device=qsv") && qsv.contains("hevc_qsv"), "{qsv}");
+    }
+
+    #[test]
+    fn frame_rate_and_bitrate() {
+        let s = spec(&Config { fps: 240, ..Config::default() }, None, None);
+        assert_eq!(s.fps, 144, "never faster than the display");
+        let s = spec(&Config::default(), None, None);
+        assert!(s.native_fps && s.fps == 144);
+        assert_eq!(s.bitrate_kbps, crate::config::auto_bitrate(2560, 1440, 144, Codec::Hevc));
+        let s = spec(&Config { bitrate_auto: false, bitrate_kbps: 12_345, ..Config::default() }, None, None);
+        assert_eq!(s.bitrate_kbps, 12_345);
+        let a = joined(&s);
+        assert!(a.contains("-b:v 12345k") && a.contains("-g 288"), "{a}");
+    }
+
+    #[test]
+    fn sound_tracks_and_buffer_kind() {
+        use crate::audio::{Source, Track};
+        let mut s = spec(&Config::default(), None, None);
+        let a = joined(&s);
+        assert!(a.contains("-nostdin") && !a.contains("pipe:0") && a.contains("-f segment"), "{a}");
+        s.tracks = ["Game", "Discord", "Mic"].iter().map(|t| Track { source: Source::Desktop, title: t.to_string() }).collect();
+        s.ram = true;
+        let a = joined(&s);
+        assert!(a.contains("-ac 6 -i pipe:0"), "{a}");
+        assert!(a.contains("asplit=4") && a.contains("pan=stereo|c0=c0+c2+c4|c1=c1+c3+c5[amix]"), "{a}");
+        assert!(a.contains("-map [amix] -map [a0] -map [a1] -map [a2]"), "{a}");
+        assert!(a.contains("-f mpegts") && a.ends_with("pipe:1"), "{a}");
+        s.tracks.truncate(1);
+        let a = joined(&s);
+        assert!(a.contains("-map 0:a") && !a.contains("asplit"), "{a}");
+    }
+
+    /// One 188-byte TS packet.
+    fn pkt(pid: u16, key: bool) -> Vec<u8> {
+        let mut p = vec![0xffu8; TS_PACKET];
+        p[0] = 0x47;
+        p[1] = ((pid >> 8) as u8 & 0x1f) | if key { 0x40 } else { 0 };
+        p[2] = pid as u8;
+        p[3] = if key { 0x30 } else { 0x10 };
+        if key {
+            p[4] = 7;
+            p[5] = 0x40;
+        }
+        p
+    }
+
+    #[test]
+    fn ram_buffer_cuts_at_keyframes_and_rolls() {
+        let ram = RamBuf::new(3);
+        let mut stream = Vec::new();
+        stream.extend(pkt(0, false));
+        stream.extend(pkt(PMT_PID, false));
+        stream.extend(pkt(VIDEO_PID, false)); // before the first keyframe: dropped
+        for _ in 0..6 {
+            stream.extend(pkt(VIDEO_PID, true));
+            stream.extend(pkt(VIDEO_PID, false));
+            stream.extend(pkt(257, false)); // audio
+        }
+        ram.feed(&stream);
+        let (header, parts) = ram.snapshot(100);
+        assert_eq!(header.len(), 2 * TS_PACKET, "PAT + PMT");
+        assert_eq!(parts.len(), 4, "3 full chunks kept + the one being written");
+        assert!(parts.iter().all(|p| p.len() == 3 * TS_PACKET && p[3] == 0x30), "each chunk starts at a keyframe");
+        assert_eq!(ram.bytes(), 4 * 3 * TS_PACKET as u64);
+        assert_eq!(ram.snapshot(2).1.len(), 2, "newest chunks only");
+    }
 }

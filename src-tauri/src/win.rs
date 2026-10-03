@@ -1,6 +1,7 @@
 //! Thin wrappers around the Win32 APIs TUFFClip needs.
+use parking_lot::Mutex;
 use serde::Serialize;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::OnceLock;
 use windows::core::{PCWSTR, PWSTR};
 use windows::Win32::Foundation::{CloseHandle, BOOL, HANDLE, HWND, LPARAM, POINT, RECT, TRUE};
@@ -178,6 +179,12 @@ fn exe_name(pid: u32) -> Option<String> {
         .map(|s| s.to_string_lossy().into_owned())
 }
 
+/// The window in front, without looking up its program (cheap enough to call often).
+pub fn foreground_hwnd() -> Option<isize> {
+    let hwnd = unsafe { GetForegroundWindow() };
+    (!hwnd.0.is_null()).then_some(hwnd.0 as isize)
+}
+
 pub fn foreground() -> Option<Foreground> {
     unsafe {
         let hwnd = GetForegroundWindow();
@@ -243,12 +250,14 @@ pub fn list_windows() -> Vec<AppWindow> {
     unsafe extern "system" fn cb(hwnd: HWND, lp: LPARAM) -> BOOL {
         let v = &mut *(lp.0 as *mut Vec<(u32, String)>);
         if IsWindowVisible(hwnd).as_bool() {
-            let len = GetWindowTextLengthW(hwnd);
+            let mut pid = 0u32;
+            GetWindowThreadProcessId(hwnd, Some(&mut pid));
+            // Our own windows are skipped before reading their text: for a window of this
+            // process that means a message to (and a wait on) the thread that owns it.
+            let len = if pid == std::process::id() { 0 } else { GetWindowTextLengthW(hwnd) };
             if len > 0 {
                 let mut buf = vec![0u16; len as usize + 1];
                 let n = GetWindowTextW(hwnd, &mut buf);
-                let mut pid = 0u32;
-                GetWindowThreadProcessId(hwnd, Some(&mut pid));
                 v.push((pid, String::from_utf16_lossy(&buf[..n.max(0) as usize])));
             }
         }
@@ -265,13 +274,9 @@ pub fn list_windows() -> Vec<AppWindow> {
         "systemsettings.exe", "msedgewebview2.exe", "tuffclip.exe", "searchhost.exe",
         "shellexperiencehost.exe", "startmenuexperiencehost.exe",
     ];
-    let me = std::process::id();
     let mut seen = HashSet::new();
     let mut out = Vec::new();
     for (pid, title) in raw {
-        if pid == me {
-            continue;
-        }
         let Some(exe) = exe_name(pid) else { continue };
         let key = exe.to_lowercase();
         if SKIP.contains(&key.as_str()) || !seen.insert(key) {
@@ -279,7 +284,7 @@ pub fn list_windows() -> Vec<AppWindow> {
         }
         out.push(AppWindow { exe, title });
     }
-    out.sort_by(|a, b| a.exe.to_lowercase().cmp(&b.exe.to_lowercase()));
+    out.sort_by_key(|a| a.exe.to_lowercase());
     out
 }
 
@@ -291,38 +296,50 @@ pub struct RunWin {
     pub hwnd: isize,
 }
 
+/// Program names of the processes seen by the last `running_games` call. This runs every second
+/// while TUFFClip waits for a game, so a process is looked up once, not on every tick.
+static EXE_NAMES: Mutex<Option<HashMap<u32, Option<String>>>> = Mutex::new(None);
+
 /// For each of the given executables (lowercase) that has a visible window, its largest window.
 /// Used to find which listed games are running right now, focused or not.
 pub fn running_games(exes: &HashSet<String>) -> Vec<RunWin> {
     struct Ctx {
+        me: u32,
         wins: Vec<(u32, isize, u64)>,
     }
     unsafe extern "system" fn cb(hwnd: HWND, lp: LPARAM) -> BOOL {
         let ctx = &mut *(lp.0 as *mut Ctx);
-        if IsWindowVisible(hwnd).as_bool() && GetWindowTextLengthW(hwnd) > 0 {
-            let ex = GetWindowLongW(hwnd, GWL_EXSTYLE) as u32;
-            if ex & WS_EX_TOOLWINDOW.0 == 0 {
-                let mut pid = 0u32;
-                GetWindowThreadProcessId(hwnd, Some(&mut pid));
-                let mut rc = RECT::default();
-                let _ = GetClientRect(hwnd, &mut rc);
-                let area = ((rc.right - rc.left).max(0) as u64) * ((rc.bottom - rc.top).max(0) as u64);
-                ctx.wins.push((pid, hwnd.0 as isize, area));
-            }
+        if !IsWindowVisible(hwnd).as_bool() {
+            return TRUE;
+        }
+        let mut pid = 0u32;
+        GetWindowThreadProcessId(hwnd, Some(&mut pid));
+        // Never one of ours: reading our own window's text would wait on the thread that owns it.
+        if pid == 0 || pid == ctx.me || GetWindowTextLengthW(hwnd) <= 0 {
+            return TRUE;
+        }
+        let ex = GetWindowLongW(hwnd, GWL_EXSTYLE) as u32;
+        if ex & WS_EX_TOOLWINDOW.0 == 0 {
+            let mut rc = RECT::default();
+            let _ = GetClientRect(hwnd, &mut rc);
+            let area = ((rc.right - rc.left).max(0) as u64) * ((rc.bottom - rc.top).max(0) as u64);
+            ctx.wins.push((pid, hwnd.0 as isize, area));
         }
         TRUE
     }
-    let mut ctx = Ctx { wins: Vec::new() };
+    let mut ctx = Ctx { me: std::process::id(), wins: Vec::new() };
     unsafe {
         let _ = EnumWindows(Some(cb), LPARAM(&mut ctx as *mut _ as isize));
     }
-    let mut names: std::collections::HashMap<u32, Option<String>> = Default::default();
-    let mut best: std::collections::HashMap<u32, (isize, u64, String)> = Default::default();
+    let mut cache = EXE_NAMES.lock();
+    let old = cache.take().unwrap_or_default();
+    let mut names: HashMap<u32, Option<String>> = HashMap::new();
+    let mut best: HashMap<u32, (isize, u64, String)> = HashMap::new();
     for (pid, hwnd, area) in ctx.wins {
-        if pid == 0 {
-            continue;
-        }
-        let exe = names.entry(pid).or_insert_with(|| exe_name(pid)).clone();
+        let exe = names
+            .entry(pid)
+            .or_insert_with(|| old.get(&pid).cloned().unwrap_or_else(|| exe_name(pid)))
+            .clone();
         let Some(exe) = exe else { continue };
         if !exes.contains(&exe.to_lowercase()) {
             continue;
@@ -333,6 +350,8 @@ pub fn running_games(exes: &HashSet<String>) -> Vec<RunWin> {
             e.1 = area;
         }
     }
+    // Only processes that still have a window are kept, so a reused process id is looked up again.
+    *cache = Some(names);
     let mut out: Vec<RunWin> = best.into_iter().map(|(pid, (hwnd, _, exe))| RunWin { pid, exe, hwnd }).collect();
     out.sort_by_key(|w| w.pid);
     out
