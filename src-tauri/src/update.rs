@@ -62,11 +62,21 @@ pub fn check(force: bool) -> Result<Option<Release>> {
     Ok(latest.filter(|r| is_newer(&r.version)))
 }
 
+/// Where the release info comes from. Debug builds only: `TUFFCLIP_UPDATE_FEED` can point at a
+/// local file in GitHub's release format (`file:///...`) to test updating without publishing.
+fn feed_url() -> String {
+    #[cfg(debug_assertions)]
+    if let Ok(f) = std::env::var("TUFFCLIP_UPDATE_FEED") {
+        return f;
+    }
+    format!("https://api.github.com/repos/{REPO}/releases/latest")
+}
+
 fn fetch_latest() -> Result<Option<Release>> {
     let out = crate::ff::cmd("curl.exe")
         .args(["-sS", "-L", "--fail", "--max-time", "20", "-H", "Accept: application/vnd.github+json", "-A"])
         .arg(concat!("TUFFClip/", env!("CARGO_PKG_VERSION")))
-        .arg(format!("https://api.github.com/repos/{REPO}/releases/latest"))
+        .arg(feed_url())
         .stdin(Stdio::null())
         .output()
         .map_err(|e| anyhow!("couldn't start curl: {e}"))?;
@@ -95,7 +105,8 @@ fn fetch_latest() -> Result<Option<Release>> {
 /// Download `rel` next to the running exe and swap it in. Returns the path of the new exe; the
 /// caller starts it and exits. `progress` gets the bytes downloaded so far.
 pub fn install(rel: &Release, progress: impl Fn(u64)) -> Result<PathBuf> {
-    if !rel.url.starts_with("https://github.com/") {
+    let test_feed = cfg!(debug_assertions) && std::env::var_os("TUFFCLIP_UPDATE_FEED").is_some() && rel.url.starts_with("file:///");
+    if !rel.url.starts_with("https://github.com/") && !test_feed {
         bail!("That download link doesn't point at GitHub.");
     }
     let cur = std::env::current_exe()?;
