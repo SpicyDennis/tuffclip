@@ -724,6 +724,9 @@ async function loadSound(path) {
   const parts = list.filter((t) => t.title !== "Mix");
   const shown = list.length > 1 && parts.length ? parts : list;
   snd.hasMix = shown.length < list.length;
+  // Waveforms are drawn relative to the clip's loudest track (up to 4x), so quiet clips still show.
+  const loudest = Math.max(1, ...shown.map((t) => Math.max(0, ...t.peaks)));
+  snd.scale = Math.min(4, 255 / loudest);
   const saved = levelsOf(path);
   const ctx = audioCtx();
   routeVideo();
@@ -820,7 +823,7 @@ function drawWave(row, t) {
     const b = Math.max(a + 1, Math.floor(((x + 2) / w) * dur * 20));
     let p = 0;
     for (let k = a; k < b && k < n; k++) p = Math.max(p, t.peaks[k]);
-    const v = Math.min(1, (p / 255) * level) * (h / 2 - 3);
+    const v = Math.min(1, (p / 255) * level * (snd.scale || 1)) * (h / 2 - 3);
     const at = (x / w) * dur;
     g.fillStyle = at >= S.start && at <= S.end ? inside : outside;
     g.fillRect(x, mid - v - 0.5, 1.5, v * 2 + 1);
@@ -1991,3 +1994,4 @@ $("#settingsScroll").addEventListener("scroll", spy);
     $("#progressInfo").textContent = parts.join(" · ");
   });
 })();
+

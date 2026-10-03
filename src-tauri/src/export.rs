@@ -293,7 +293,13 @@ pub fn export(cfg: &Config, req: &ExportRequest, progress: impl Fn(f64)) -> Resu
     // ---- no re-encode (only the sound, if its levels were changed)
     if !size_mode && !rate_mode && !webm && !recode {
         let mut c = if sound.needs_encode() { ff::cmd_prio(&cfg.ffmpeg, req.low_impact) } else { ff::cmd(&cfg.ffmpeg) };
-        c.args(["-hide_banner", "-loglevel", "error", "-y", "-ss", &ss, "-i"])
+        c.args(["-hide_banner", "-loglevel", "error", "-y"]);
+        if sound.needs_encode() {
+            // The copied video starts at the keyframe before `start`; decode the sound from there
+            // too, or the export opens with up to 2 s of silence.
+            c.arg("-noaccurate_seek");
+        }
+        c.args(["-ss", &ss, "-i"])
             .arg(&input)
             .args(["-t", &t, "-map", "0:v:0"])
             .args(sound.maps())
