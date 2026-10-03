@@ -136,7 +136,7 @@ pub struct Config {
     /// The capture card window may use the camera API (Windows sees capture cards as cameras).
     /// Off until the user allows it from that window.
     pub camera_access: bool,
-    /// Ask GitHub for a newer TUFFClip once a day. Off: TUFFClip never goes online for updates.
+    /// Ask GitHub for a newer TUFFClip every 15 minutes. Off: TUFFClip never goes online for updates.
     pub check_updates: bool,
 }
 

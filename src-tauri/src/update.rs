@@ -25,10 +25,14 @@ pub struct Release {
     pub digest: String,
 }
 
+/// GitHub is asked at most this often (unless the user clicks Check now).
+pub const CHECK_EVERY_SECS: u64 = 15 * 60;
+
 #[derive(Default, Serialize, Deserialize)]
+#[serde(default)]
 struct Cache {
-    /// Day of the last successful check (YYYY-MM-DD, local time).
-    checked: String,
+    /// When the last successful check ran (Unix seconds).
+    checked_at: u64,
     latest: Option<Release>,
 }
 
@@ -36,8 +40,8 @@ fn cache_path() -> PathBuf {
     crate::config::data_dir().join("update.json")
 }
 
-fn today() -> String {
-    chrono::Local::now().format("%Y-%m-%d").to_string()
+fn now() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
 }
 
 fn parse_ver(v: &str) -> Vec<u64> {
@@ -48,17 +52,18 @@ pub fn is_newer(v: &str) -> bool {
     parse_ver(v) > parse_ver(env!("CARGO_PKG_VERSION"))
 }
 
-/// The newest release if it is newer than this copy. Unless `force`, GitHub is asked at most once a
-/// day; later calls that day answer from the saved result. A failed check isn't remembered, so the
-/// next one tries again.
+/// The newest release if it is newer than this copy. Unless `force`, GitHub is asked at most once
+/// every 15 minutes; calls in between answer from the saved result. A failed check isn't
+/// remembered, so the next one tries again.
 pub fn check(force: bool) -> Result<Option<Release>> {
     let cache: Cache = std::fs::read_to_string(cache_path()).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default();
-    if !force && cache.checked == today() {
+    let age = now().saturating_sub(cache.checked_at);
+    if !force && cache.checked_at > 0 && age < CHECK_EVERY_SECS {
         return Ok(cache.latest.filter(|r| is_newer(&r.version)));
     }
     let latest = fetch_latest()?;
     let _ = std::fs::create_dir_all(crate::config::data_dir());
-    let _ = std::fs::write(cache_path(), serde_json::to_string_pretty(&Cache { checked: today(), latest: latest.clone() })?);
+    let _ = std::fs::write(cache_path(), serde_json::to_string_pretty(&Cache { checked_at: now(), latest: latest.clone() })?);
     Ok(latest.filter(|r| is_newer(&r.version)))
 }
 

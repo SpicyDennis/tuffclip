@@ -1986,7 +1986,13 @@ $("#settingsScroll").addEventListener("scroll", spy);
     if (info.config_broken) toast("Your settings file was damaged, so TUFFClip started with defaults. The old file is saved as config.broken.json.", true);
   } catch {}
 
-  checkUpdates(false); // at most once a day, and only if turned on
+  checkUpdates(false); // at most every 15 minutes, and only if turned on
+  listen("update-available", (e) => {
+    if (upd.busy || !S.cfg?.check_updates) return;
+    upd.rel = e.payload;
+    upd.msg = "";
+    renderUpdate();
+  });
   listen("status", (e) => renderStatus(e.payload));
   listen("clip-saved", (e) => {
     toast(`Saved ${baseName(e.payload)}`);

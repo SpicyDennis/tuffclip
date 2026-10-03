@@ -472,7 +472,7 @@ async fn download_ffmpeg(app: AppHandle, eng: Eng<'_>) -> Result<String, String>
     Ok(path)
 }
 
-/// Is there a newer TUFFClip on GitHub? Unless `force`, GitHub is asked at most once a day.
+/// Is there a newer TUFFClip on GitHub? Unless `force`, GitHub is asked at most every 15 minutes.
 /// Refuses to go online while update checks are off.
 #[tauri::command]
 async fn update_check(eng: Eng<'_>, force: bool) -> Result<Option<update::Release>, String> {
@@ -711,6 +711,27 @@ fn start_key_poll(app: AppHandle) {
     });
 }
 
+/// While update checks are on, ask GitHub every 15 minutes (the first time right at startup) and
+/// tell an open window when a newer version turns up.
+fn start_update_poll(app: AppHandle) {
+    std::thread::spawn(move || {
+        let mut told = String::new();
+        loop {
+            let on = app.try_state::<Arc<Engine>>().map_or(false, |e| e.cfg.lock().check_updates);
+            if on {
+                // Answers from the saved result until it is 15 minutes old, so this costs nothing in between.
+                if let Ok(Some(rel)) = update::check(false) {
+                    if rel.version != told {
+                        told = rel.version.clone();
+                        let _ = app.emit("update-available", rel);
+                    }
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_secs(60));
+        }
+    });
+}
+
 /// If the app's main thread stops answering (a hung webview, a stuck driver call), a background
 /// thread notices and restarts TUFFClip, so a frozen copy can never block you from opening it again.
 fn start_self_heal(app: AppHandle) {
@@ -837,7 +858,6 @@ fn main() {
             let (hk1, hk2) = (cfg.hotkey.clone(), cfg.hotkey2.clone());
             // Just updated: open the window so you see it worked.
             let start_hidden = !updated && (cfg.start_hidden || std::env::args().any(|a| a == "--hidden"));
-            let check_updates = cfg.check_updates;
 
             let engine = Arc::new(Engine::new(app.handle().clone(), cfg));
             app.manage(engine.clone());
@@ -856,11 +876,8 @@ fn main() {
                 if updated || !cfg!(debug_assertions) {
                     fix_autostart_path();
                 }
-                // First start of the day: ask GitHub (the window shows the result when it opens).
-                if check_updates {
-                    let _ = update::check(false);
-                }
             });
+            start_update_poll(app.handle().clone());
 
             if !start_hidden {
                 show_main(app.handle());
