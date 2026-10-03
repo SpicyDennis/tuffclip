@@ -227,19 +227,12 @@ fn open_capture(app: AppHandle) {
     show_capture(&app);
 }
 
-/// Allow or remove the capture window's camera access. Removing it closes the window, which
-/// releases the card.
+/// Allow (or withdraw) the capture window's camera access.
 #[tauri::command]
 fn set_camera_access(app: AppHandle, eng: Eng<'_>, on: bool) -> Result<(), String> {
     let mut cfg = eng.cfg.lock().clone();
     cfg.camera_access = on;
-    apply_config(&app, &eng, cfg)?;
-    if !on {
-        if let Some(w) = app.get_webview_window("capture") {
-            let _ = w.destroy();
-        }
-    }
-    Ok(())
+    apply_config(&app, &eng, cfg)
 }
 
 /// The capture window reports the card's picture size and frame rate (all None = no picture).
@@ -524,7 +517,7 @@ pub(crate) fn show_capture(app: &AppHandle) {
 
 /// The camera permission is ours, not WebView2's: every request from the capture window is
 /// answered from `Config.camera_access` and never saved by WebView2, so there is no browser prompt
-/// and "Remove camera access" really removes it.
+/// and the permission is ours to give.
 fn gate_camera(app: &AppHandle, w: &tauri::WebviewWindow) {
     use webview2_com::{Microsoft::Web::WebView2::Win32::*, PermissionRequestedEventHandler};
     let eng: Arc<Engine> = app.state::<Arc<Engine>>().inner().clone();

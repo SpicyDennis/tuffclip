@@ -116,7 +116,7 @@ pub struct Config {
     /// Clips recorded from the capture card window are filed under this name.
     pub capture_name: String,
     /// The capture card window may use the camera API (Windows sees capture cards as cameras).
-    /// Off until the user allows it from that window; "Remove camera access" turns it off again.
+    /// Off until the user allows it from that window.
     pub camera_access: bool,
 }
 
