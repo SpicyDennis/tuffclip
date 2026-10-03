@@ -24,11 +24,12 @@ let hotkey = "the clip shortcut";
 let mode = "games";
 
 // ------------------------------------------------------------------ picture and sound
-function showEmpty(title, sub = "", retry = false) {
+function showEmpty(title, sub = "", retry = false, label = "Try again") {
   $("#capEmpty").hidden = false;
   $("#capTitle").textContent = title;
   $("#capSub").textContent = sub;
   $("#capRetry").hidden = !retry;
+  $("#capRetry").textContent = label;
 }
 
 function stopStream() {
@@ -103,8 +104,15 @@ async function start() {
   if (starting) return;
   starting = true;
   stopStream();
-  showEmpty("Looking for your capture card…");
   try {
+    // Windows sees capture cards as cameras. TUFFClip never asks for camera access by itself:
+    // until it is allowed here, it only offers to look for the card.
+    const cfg = await invoke("get_config");
+    if (!cfg.camera_access) {
+      showEmpty("Look for your capture card?", "Windows treats capture cards as cameras, so TUFFClip needs camera access to see yours. You can remove the access again in Settings > Capture card.", true, "Look for capture card");
+      return;
+    }
+    showEmpty("Looking for your capture card…");
     let { video, audio } = await devices();
     // Device names are only readable once camera access is allowed; ask once, then look again.
     if (!video.length || video.some((d) => !d.label)) {
@@ -139,7 +147,7 @@ async function start() {
   } catch (e) {
     stopStream();
     if (e.name === "NotAllowedError") {
-      showEmpty("TUFFClip isn't allowed to use the capture card.", "Windows sees capture cards as cameras. Turn on Settings > Privacy > Camera > Let desktop apps access your camera, then try again.", true);
+      showEmpty("TUFFClip isn't allowed to use the capture card.", "Windows blocks camera access for desktop apps. Turn on Settings > Privacy > Camera > Let desktop apps access your camera, then try again.", true);
     } else if (e.name === "NotReadableError" || e.name === "AbortError") {
       showEmpty("The capture card is busy.", "Another program (OBS, Discord, the Camera app) is using it. Close that program, then try again.", true);
     } else {
@@ -151,7 +159,13 @@ async function start() {
 }
 
 feed.addEventListener("resize", reportFeed);
-$("#capRetry").addEventListener("click", start);
+$("#capRetry").addEventListener("click", async () => {
+  try {
+    const cfg = await invoke("get_config");
+    if (!cfg.camera_access) await invoke("set_camera_access", { on: true });
+  } catch {}
+  start();
+});
 
 let changeTimer = 0;
 navigator.mediaDevices.addEventListener("devicechange", () => {

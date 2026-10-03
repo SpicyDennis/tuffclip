@@ -1086,6 +1086,10 @@ function fillControls(force = false) {
     : "The X quits TUFFClip completely, which also stops recording.";
   set("#monitorSel", (el) => { if (c.monitor) el.value = c.monitor; });
   set("#captureName", (el) => (el.value = c.capture_name));
+  $("#removeCamera").disabled = !c.camera_access;
+  $("#cameraHint").textContent = c.camera_access
+    ? "The capture window can use your capture card. Removing access closes the window and makes it ask again."
+    : "Camera access isn't given. The capture window asks before it looks for the card.";
   $("#cardHint").textContent = c.mode === "games"
     ? "The window shows the card's picture and plays its sound so you can play on it. While it's open, TUFFClip records it at the card's own resolution (fullscreen looks sharpest) and your clip shortcut saves from it."
     : "The window shows the card's picture and plays its sound so you can play on it. You record a monitor all the time, so put the window on that monitor; clips made while it's focused are filed under the name below.";
@@ -1186,6 +1190,15 @@ onChange("#captureName", (el) => {
 const openCapture = () => invoke("open_capture").catch((e) => toast(String(e), true));
 $("#openCapture").addEventListener("click", openCapture);
 $("#openCapture2").addEventListener("click", openCapture);
+$("#removeCamera").addEventListener("click", async () => {
+  try {
+    await invoke("set_camera_access", { on: false });
+    S.cfg.camera_access = false;
+    $("#removeCamera").disabled = true;
+    $("#cameraHint").textContent = "Camera access isn't given. The capture window asks before it looks for the card.";
+    toast("Camera access removed");
+  } catch (e) { toast(String(e), true); }
+});
 onChange("#drawMouse", (el) => ({ draw_mouse: el.checked }));
 onChange("#indicator", (el) => ({ indicator: el.value }));
 onChange("#startHidden", (el) => ({ start_hidden: el.checked }));

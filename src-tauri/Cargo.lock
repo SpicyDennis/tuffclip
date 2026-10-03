@@ -4249,7 +4249,7 @@ checksum = "e421abadd41a4225275504ea4d6566923418b7f05506fbc9c0fe86ba7396114b"
 
 [[package]]
 name = "tuffclip"
-version = "0.13.0"
+version = "0.15.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -4262,7 +4262,9 @@ dependencies = [
  "tauri-build",
  "tauri-plugin-global-shortcut",
  "tauri-plugin-single-instance",
+ "webview2-com",
  "windows 0.58.0",
+ "windows-core 0.62.2",
 ]
 
 [[package]]

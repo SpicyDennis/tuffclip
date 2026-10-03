@@ -15,7 +15,7 @@
     <button class="tab active" id="tabLibrary" data-tab="library" role="tab">Library</button>
     <button class="tab" id="tabPreview" data-tab="preview" role="tab">Preview</button>
   </nav>
-  <button class="tab" id="openCapture" title="Open the capture card window to play and record a console (Switch 2) over HDMI">Capture card</button>
+  <button class="tab" id="openCapture" title="Open the capture card window to play and record a console over HDMI">Capture card</button>
   <div class="quick" id="quick" role="group" aria-label="Quick settings">
     <label>Clip length <select id="qClip" aria-label="Clip length"></select></label>
     <label>Resolution <select id="qHeight" aria-label="Resolution"></select></label>
@@ -277,10 +277,14 @@
 
       <section class="group" id="g-card">
         <h3>Capture card</h3>
-        <p class="hint">Play and record a console, like a Switch 2, through a USB HDMI capture card.</p>
+        <p class="hint">Play and record a console through a USB HDMI capture card.</p>
         <div class="field">
           <div class="row"><button class="btn sm" id="openCapture2">Open capture card window</button></div>
           <p class="hint" id="cardHint"></p>
+        </div>
+        <div class="field">
+          <div class="row"><button class="btn sm danger" id="removeCamera">Remove camera access</button></div>
+          <p class="hint" id="cameraHint"></p>
         </div>
         <div class="field">
           <label for="captureName">File clips under</label>

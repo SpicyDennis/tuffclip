@@ -69,7 +69,9 @@ fn apply_config(app: &AppHandle, eng: &Engine, mut cfg: Config) -> Result<(), St
 }
 
 #[tauri::command]
-fn save_config(app: AppHandle, eng: Eng<'_>, cfg: Config) -> Result<(), String> {
+fn save_config(app: AppHandle, eng: Eng<'_>, mut cfg: Config) -> Result<(), String> {
+    // Camera access changes only through set_camera_access (a stale settings page must not undo it).
+    cfg.camera_access = eng.cfg.lock().camera_access;
     apply_config(&app, &eng, cfg)
 }
 
@@ -223,6 +225,21 @@ fn preview_stop() {
 #[tauri::command]
 fn open_capture(app: AppHandle) {
     show_capture(&app);
+}
+
+/// Allow or remove the capture window's camera access. Removing it closes the window, which
+/// releases the card.
+#[tauri::command]
+fn set_camera_access(app: AppHandle, eng: Eng<'_>, on: bool) -> Result<(), String> {
+    let mut cfg = eng.cfg.lock().clone();
+    cfg.camera_access = on;
+    apply_config(&app, &eng, cfg)?;
+    if !on {
+        if let Some(w) = app.get_webview_window("capture") {
+            let _ = w.destroy();
+        }
+    }
+    Ok(())
 }
 
 /// The capture window reports the card's picture size and frame rate (all None = no picture).
@@ -494,11 +511,45 @@ pub(crate) fn show_capture(app: &AppHandle) {
             let _ = w.set_focus();
             return;
         }
-        let _ = WebviewWindowBuilder::new(&app, "capture", WebviewUrl::App("capture.html".into()))
+        let built = WebviewWindowBuilder::new(&app, "capture", WebviewUrl::App("capture.html".into()))
             .title("TUFFClip · Capture card")
             .inner_size(1280.0, 720.0)
             .min_inner_size(480.0, 270.0)
             .build();
+        if let Ok(w) = built {
+            gate_camera(&app, &w);
+        }
+    });
+}
+
+/// The camera permission is ours, not WebView2's: every request from the capture window is
+/// answered from `Config.camera_access` and never saved by WebView2, so there is no browser prompt
+/// and "Remove camera access" really removes it.
+fn gate_camera(app: &AppHandle, w: &tauri::WebviewWindow) {
+    use webview2_com::{Microsoft::Web::WebView2::Win32::*, PermissionRequestedEventHandler};
+    let eng: Arc<Engine> = app.state::<Arc<Engine>>().inner().clone();
+    let _ = w.with_webview(move |wv| unsafe {
+        let Ok(core) = wv.controller().CoreWebView2() else { return };
+        let mut token = Default::default();
+        let handler = PermissionRequestedEventHandler::create(Box::new(move |_, args| {
+            if let Some(args) = args {
+                let mut kind = COREWEBVIEW2_PERMISSION_KIND_UNKNOWN_PERMISSION;
+                args.PermissionKind(&mut kind)?;
+                if kind == COREWEBVIEW2_PERMISSION_KIND_CAMERA || kind == COREWEBVIEW2_PERMISSION_KIND_MICROPHONE {
+                    let state = if eng.cfg.lock().camera_access {
+                        COREWEBVIEW2_PERMISSION_STATE_ALLOW
+                    } else {
+                        COREWEBVIEW2_PERMISSION_STATE_DENY
+                    };
+                    args.SetState(state)?;
+                    if let Ok(a3) = windows_core::Interface::cast::<ICoreWebView2PermissionRequestedEventArgs3>(&args) {
+                        let _ = a3.SetSavesInProfile(false);
+                    }
+                }
+            }
+            Ok(())
+        }));
+        let _ = core.add_PermissionRequested(&handler, &mut token);
     });
 }
 
@@ -679,6 +730,7 @@ fn main() {
             preview_start,
             preview_stop,
             open_capture,
+            set_camera_access,
             capture_feed,
             set_fullscreen,
             list_clips,

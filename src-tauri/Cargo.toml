@@ -1,6 +1,6 @@
 [package]
 name = "tuffclip"
-version = "0.14.3"
+version = "0.15.0"
 description = "Lightweight game & desktop clipper"
 edition = "2021"
 
@@ -18,6 +18,8 @@ parking_lot = "0.12"
 chrono = "0.4"
 dirs = "5"
 cpal = "0.15"
+webview2-com = "0.39"
+windows-core = "0.62"
 
 [dependencies.windows]
 version = "0.58"
