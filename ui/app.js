@@ -1337,6 +1337,8 @@ function fillControls(force = false) {
   set("#closeToTray", (el) => (el.checked = c.close_to_tray));
   set("#minToTray", (el) => (el.checked = c.minimize_to_tray));
   set("#beep", (el) => (el.checked = c.beep));
+  set("#checkUpdates", (el) => (el.checked = c.check_updates));
+  $("#updRow").hidden = !c.check_updates;
   set("#audio", (el) => (el.checked = c.audio));
   renderAudio(c);
   set("#gentleSave", (el) => (el.checked = c.gentle_save));
@@ -1468,6 +1470,11 @@ onChange("#startHidden", (el) => ({ start_hidden: el.checked }));
 onChange("#closeToTray", (el) => ({ close_to_tray: el.checked }));
 onChange("#minToTray", (el) => ({ minimize_to_tray: el.checked }));
 onChange("#beep", (el) => ({ beep: el.checked }));
+onChange("#checkUpdates", (el) => {
+  if (el.checked) setTimeout(() => checkUpdates(false), 600); // after the setting is saved
+  else { upd.rel = null; upd.msg = ""; renderUpdate(); }
+  return { check_updates: el.checked };
+});
 onChange("#audio", (el) => ({ audio: el.checked }));
 onChange("#discordTrack", (el) => ({ discord_track: el.checked }));
 onChange("#mic", (el) => ({ mic: el.checked }));
@@ -1827,6 +1834,68 @@ function startMemPoll() {
 }
 function stopMemPoll() { clearInterval(memTimer); memTimer = null; }
 
+// ---- updates (only while Settings > About > Check for updates is on)
+const upd = { rel: null, busy: false, later: false, msg: "" };
+function renderUpdate() {
+  const r = upd.rel;
+  $("#updBanner").hidden = !(upd.busy || (r && !upd.later && S.cfg?.check_updates));
+  $("#updBannerBtn").hidden = upd.busy;
+  $("#updBannerLater").hidden = upd.busy;
+  $("#updInstall").hidden = !r || upd.busy;
+  $("#updCheckNow").disabled = upd.busy;
+  if (r && !upd.busy) {
+    upd.msg = `TUFFClip ${r.version} is available.`;
+    $("#updBannerText").textContent = upd.msg;
+  }
+  $("#updHint").textContent = upd.msg;
+}
+async function checkUpdates(force) {
+  if (!S.cfg?.check_updates || upd.busy) return;
+  if (force) { upd.msg = "Checking…"; renderUpdate(); }
+  try {
+    upd.rel = await invoke("update_check", { force });
+    upd.msg = upd.rel ? "" : "You have the newest version.";
+  } catch (e) {
+    upd.rel = null;
+    upd.msg = String(e);
+    if (force) toast(String(e), true);
+  }
+  renderUpdate();
+}
+async function installUpdate() {
+  const r = upd.rel;
+  if (!r || upd.busy) return;
+  if (S.exporting) { toast("Wait for the export to finish, then update.", true); return; }
+  $("#updDlgTitle").textContent = `Update to TUFFClip ${r.version}?`;
+  $("#updDlgBody").textContent = `TUFFClip downloads it from GitHub (${fmtSize(r.size)}), closes, and opens the new version. The clip buffer starts over, so save anything you want to keep first.`;
+  const dlg = $("#updDlg");
+  dlg.returnValue = "";
+  dlg.showModal();
+  await new Promise((ok) => dlg.addEventListener("close", ok, { once: true }));
+  if (dlg.returnValue !== "ok") return;
+  upd.busy = true;
+  upd.later = false;
+  const say = (t) => { upd.msg = t; $("#updBannerText").textContent = t; renderUpdate(); };
+  say(`Downloading TUFFClip ${r.version}…`);
+  const un = await listen("update-download", (e) =>
+    say(`Downloading TUFFClip ${r.version}… ${fmtSize(e.payload)} of ${fmtSize(r.size)}`));
+  try {
+    await invoke("update_install", { rel: r });
+    say("Restarting…");
+  } catch (e) {
+    un();
+    upd.busy = false;
+    say(String(e));
+    toast(String(e), true);
+    // TUFFClip can't replace itself in this folder: hand over to the download page.
+    if (String(e).includes("write to its own folder")) invoke("open_releases_page").catch(() => {});
+  }
+}
+$("#updBannerBtn").addEventListener("click", installUpdate);
+$("#updInstall").addEventListener("click", installUpdate);
+$("#updBannerLater").addEventListener("click", () => { upd.later = true; renderUpdate(); });
+$("#updCheckNow").addEventListener("click", () => checkUpdates(true));
+
 // ---- advanced / about
 $("#openData").addEventListener("click", () => invoke("open_data_folder").catch((e) => toast(e, true)));
 $("#resetAll").addEventListener("click", async () => {
@@ -1890,9 +1959,11 @@ $("#settingsScroll").addEventListener("scroll", spy);
   renderFfHints(); // shows the download strip if FFmpeg is missing
   try {
     const info = await invoke("app_info");
+    if (info.updated) toast(`TUFFClip was updated to ${info.version}`);
     if (info.config_broken) toast("Your settings file was damaged, so TUFFClip started with defaults. The old file is saved as config.broken.json.", true);
   } catch {}
 
+  checkUpdates(false); // at most once a day, and only if turned on
   listen("status", (e) => renderStatus(e.payload));
   listen("clip-saved", (e) => {
     toast(`Saved ${baseName(e.payload)}`);

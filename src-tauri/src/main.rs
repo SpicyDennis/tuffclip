@@ -11,6 +11,7 @@ mod preview;
 mod recorder;
 mod sound;
 mod tray;
+mod update;
 mod win;
 
 use config::Config;
@@ -95,6 +96,8 @@ struct AppInfo {
     data_dir: String,
     config_broken: bool,
     autostart: bool,
+    /// This copy was just started by an update.
+    updated: bool,
 }
 
 #[tauri::command]
@@ -105,6 +108,7 @@ fn app_info() -> AppInfo {
         data_dir: config::data_dir().to_string_lossy().into_owned(),
         config_broken: config::CONFIG_BROKEN.load(std::sync::atomic::Ordering::Relaxed),
         autostart: autostart_enabled(),
+        updated: std::env::args().any(|a| a == "--updated"),
     }
 }
 
@@ -449,6 +453,52 @@ async fn download_ffmpeg(app: AppHandle, eng: Eng<'_>) -> Result<String, String>
     Ok(path)
 }
 
+/// Is there a newer TUFFClip on GitHub? Unless `force`, GitHub is asked at most once a day.
+/// Refuses to go online while update checks are off.
+#[tauri::command]
+async fn update_check(eng: Eng<'_>, force: bool) -> Result<Option<update::Release>, String> {
+    if !eng.cfg.lock().check_updates {
+        return Err("Update checks are off.".into());
+    }
+    tauri::async_runtime::spawn_blocking(move || update::check(force))
+        .await
+        .map_err(e2s)?
+        .map_err(|e| format!("{e:#}"))
+}
+
+/// Download the release, swap it in for this exe, start it and quit.
+#[tauri::command]
+async fn update_install(app: AppHandle, eng: Eng<'_>, rel: update::Release) -> Result<(), String> {
+    if !eng.cfg.lock().check_updates {
+        return Err("Update checks are off.".into());
+    }
+    if !update::is_newer(&rel.version) {
+        return Err("You already have this version.".into());
+    }
+    let a = app.clone();
+    let exe = tauri::async_runtime::spawn_blocking(move || {
+        update::install(&rel, |bytes| {
+            let _ = a.emit("update-download", bytes);
+        })
+    })
+    .await
+    .map_err(e2s)?
+    .map_err(|e| format!("{e:#}"))?;
+    // The new copy waits until this one has exited (see main), so the single-instance hand-off
+    // can't reach this copy while it is closing.
+    std::process::Command::new(&exe)
+        .args(["--relaunch", "--updated"])
+        .spawn()
+        .map_err(|e| format!("The new version is in place but didn't start ({e}). Open it from {}.", exe.display()))?;
+    app.exit(0);
+    Ok(())
+}
+
+#[tauri::command]
+fn open_releases_page() -> Result<(), String> {
+    std::process::Command::new("explorer").arg(update::RELEASES_PAGE).spawn().map(|_| ()).map_err(e2s)
+}
+
 // ------------------------------------------------------------------- helpers
 
 /// Replace all registered shortcuts with these (an empty second one is skipped).
@@ -667,7 +717,10 @@ fn start_self_heal(app: AppHandle) {
 }
 
 fn main() {
-    if std::env::args().any(|a| a == "--relaunch") {
+    let updated = std::env::args().any(|a| a == "--updated");
+    if updated {
+        update::wait_for_old();
+    } else if std::env::args().any(|a| a == "--relaunch") {
         std::thread::sleep(std::time::Duration::from_secs(3));
     }
     tauri::Builder::default()
@@ -754,13 +807,18 @@ fn main() {
             export_clip,
             ffmpeg_info,
             download_ffmpeg,
+            update_check,
+            update_install,
+            open_releases_page,
         ])
-        .setup(|app| {
+        .setup(move |app| {
             let cfg = Config::load();
             let _ = std::fs::create_dir_all(&cfg.clips_dir);
             let _ = app.asset_protocol_scope().allow_directory(&cfg.clips_dir, true);
             let (hk1, hk2) = (cfg.hotkey.clone(), cfg.hotkey2.clone());
-            let start_hidden = cfg.start_hidden || std::env::args().any(|a| a == "--hidden");
+            // Just updated: open the window so you see it worked.
+            let start_hidden = !updated && (cfg.start_hidden || std::env::args().any(|a| a == "--hidden"));
+            let check_updates = cfg.check_updates;
 
             let engine = Arc::new(Engine::new(app.handle().clone(), cfg));
             app.manage(engine.clone());
@@ -772,6 +830,17 @@ fn main() {
             std::thread::spawn(move || engine.run_watcher());
             start_self_heal(app.handle().clone());
             start_key_poll(app.handle().clone());
+            std::thread::spawn(move || {
+                update::clean_up();
+                // The exe may have a new name now: point "Start with Windows" at it.
+                if updated && autostart_enabled() {
+                    let _ = set_autostart(true);
+                }
+                // First start of the day: ask GitHub (the window shows the result when it opens).
+                if check_updates {
+                    let _ = update::check(false);
+                }
+            });
 
             if !start_hidden {
                 show_main(app.handle());
