@@ -324,7 +324,16 @@ impl Engine {
                         _ => (None, false),
                     };
                     let crop = self.resolve_crop(&mon, cand, min);
-                    Some(RecordSpec::new(&cfg, &mon, crop, None))
+                    let mut s = RecordSpec::new(&cfg, &mon, crop, None);
+                    // Below native the display is captured with gfxcapture (it scales on the GPU).
+                    if s.height != 0 && s.height < s.src_h && !crate::ff::has_gfxcapture(&cfg.ffmpeg) {
+                        s.height = 0;
+                        s.apply_auto_bitrate(&cfg);
+                        if status.warn.is_none() {
+                            status.warn = Some("This FFmpeg can't scale the screen on the graphics card (no gfxcapture), so it records at full resolution. Update FFmpeg in Settings > Advanced.".into());
+                        }
+                    }
+                    Some(s)
                 };
 
                 match spec {

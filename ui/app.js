@@ -1481,7 +1481,7 @@ const even = (x) => Math.max(2, Math.floor(x / 2) * 2);
 
 function renderHeight() {
   const m = curMonitor();
-  const canScale = !S.ff || S.ff.scale_d3d11 !== false;
+  const canScale = !S.ff || S.ff.gpu_scale !== false;
   const opts = [];
   let cur = S.cfg.height;
   if (m) {
@@ -2021,7 +2021,7 @@ async function renderFfHints() {
   $("#encHint").textContent = f.encoders.length
     ? `Your FFmpeg supports: ${f.encoders.map((e) => ({ nvenc: "NVIDIA", amf: "AMD", qsv: "Intel" }[e])).join(", ")}`
     : "This FFmpeg build has no hardware encoders.";
-  $("#scaleHint").textContent = f.scale_d3d11 ? "" : "Native only: this FFmpeg can't resize on the GPU (needs FFmpeg 8).";
+  $("#scaleHint").textContent = f.gpu_scale ? "" : "Native only: this FFmpeg can't resize on the GPU (needs FFmpeg 8 with gfxcapture).";
   renderHeight();
   renderEstimates();
 }

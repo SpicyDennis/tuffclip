@@ -46,7 +46,8 @@ pub struct FfInfo {
     pub encoders: Vec<String>,
     pub ddagrab: bool,
     pub gfxcapture: bool,
-    pub scale_d3d11: bool,
+    /// Can record below native resolution: gfxcapture scales on the GPU (scale_d3d11 is broken).
+    pub gpu_scale: bool,
     pub vp9: bool,
 }
 
@@ -114,7 +115,7 @@ pub fn info(ffmpeg: &str) -> FfInfo {
             .collect(),
         ddagrab: filters.contains(" ddagrab "),
         gfxcapture: filters.contains(" gfxcapture "),
-        scale_d3d11: filters.contains(" scale_d3d11 "),
+        gpu_scale: filters.contains(" gfxcapture "),
         vp9: encoders.contains("libvpx-vp9"),
     }
 }

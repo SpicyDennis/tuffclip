@@ -1,8 +1,9 @@
 //! The replay buffer.
 //!
 //! One long-lived ffmpeg process does capture + encode entirely on the GPU:
-//!   ddagrab (DXGI Desktop Duplication, frames stay in VRAM as D3D11 textures)
-//!     -> optional scale_d3d11 (GPU; window capture scales inside gfxcapture instead)
+//!   ddagrab (DXGI Desktop Duplication, frames stay in VRAM as D3D11 textures),
+//!   or gfxcapture (Windows Graphics Capture: a window, or the monitor when downscaling,
+//!   since it scales on the GPU itself; scale_d3d11 after ddagrab fails on current ffmpeg)
 //!     -> NVENC / AMF / QSV hardware encoder
 //!     -> either 2-second MPEG-TS segments in a small rotating ring on disk,
 //!        or an MPEG-TS stream on stdout that TUFFClip keeps in a RAM ring.
@@ -46,6 +47,10 @@ pub struct Crop {
 pub struct RecordSpec {
     pub adapter: u32,
     pub output: u32,
+    /// The monitor's HMONITOR and full size, for gfxcapture when the display is downscaled.
+    pub hmonitor: isize,
+    pub mon_w: u32,
+    pub mon_h: u32,
     /// Size of what is captured (the window, or the whole monitor).
     pub src_w: u32,
     pub src_h: u32,
@@ -88,6 +93,9 @@ impl RecordSpec {
         let mut spec = RecordSpec {
             adapter: m.adapter,
             output: m.output,
+            hmonitor: m.hmon,
+            mon_w: m.width,
+            mon_h: m.height,
             src_w,
             src_h,
             crop,
@@ -522,6 +530,17 @@ fn build_args(s: &RecordSpec) -> Vec<String> {
             "gfxcapture=hwnd={hwnd}:capture_cursor={}:display_border=0:max_framerate={}:{size}:resize_mode=scale_aspect,fps={}",
             s.draw_mouse as u8, s.fps, s.fps
         )
+    } else if let Some((w, h)) = downscale {
+        // Below native: capture the monitor with gfxcapture, which crops and scales on the GPU.
+        // ddagrab can't: scale_d3d11 fails on current ffmpeg ("Unsupported pixel format", or
+        // "Could not create the texture" with format=nv12 on Windows 10), and D3D11 frames can't
+        // be mapped to CUDA, D3D12 or Vulkan there. Needs gfxcapture (checked by the engine).
+        let c = s.crop.unwrap_or(Crop { x: 0, y: 0, w: s.mon_w, h: s.mon_h });
+        format!(
+            "gfxcapture=hmonitor={}:capture_cursor={}:display_border=0:max_framerate={}:crop_left={}:crop_top={}:crop_right={}:crop_bottom={}:width={w}:height={h}:resize_mode=scale_aspect,fps={}",
+            s.hmonitor as usize, s.draw_mouse as u8, s.fps,
+            c.x, c.y, s.mon_w.saturating_sub(c.x + c.w), s.mon_h.saturating_sub(c.y + c.h), s.fps
+        )
     } else {
         let mut v = format!(
             "ddagrab=output_idx={}:framerate={}:draw_mouse={}",
@@ -532,9 +551,6 @@ fn build_args(s: &RecordSpec) -> Vec<String> {
         }
         v
     };
-    if let (Some((w, h)), None) = (downscale, s.window) {
-        vf += &format!(",scale_d3d11={w}:{h}");
-    }
     if s.encoder == Encoder::Qsv {
         vf += ",hwmap=derive_device=qsv,format=qsv";
     }
