@@ -157,7 +157,7 @@ impl Default for Config {
             audio: true,
             audio_source: AudioSource::Game,
             discord_track: true,
-            mic: false,
+            mic: true,
             mic_device: String::new(),
             audio_kbps: 160,
             audio_offset_ms: 0,

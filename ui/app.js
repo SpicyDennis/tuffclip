@@ -12,6 +12,26 @@ const store = {
   set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} },
 };
 
+// When the window is too narrow and the recording/status group drops to its own
+// row in the top bar, line its left edge up with the quick settings above it.
+function alignTopBar() {
+  const bar = $(".topbar"), quick = $("#quick"), right = $(".topright");
+  right.classList.remove("wrapped");
+  right.style.marginLeft = right.style.maxWidth = "";
+  const q = quick.getBoundingClientRect(), r = right.getBoundingClientRect();
+  if (r.top < q.bottom) return; // still on the same row
+  const b = bar.getBoundingClientRect();
+  const left = Math.max(0, q.left - b.left - parseFloat(getComputedStyle(bar).paddingLeft));
+  right.classList.add("wrapped");
+  right.style.marginLeft = left + "px";
+  right.style.maxWidth = `calc(100% - ${left}px)`;
+}
+{
+  const ro = new ResizeObserver(alignTopBar);
+  ["header.topbar", "#quick", "#status"].forEach((s) => ro.observe($(s)));
+  window.addEventListener("resize", alignTopBar);
+}
+
 const HEVC_RATIO = 0.65; // HEVC needs about this share of H.264's bitrate for the same picture quality
 
 const S = {
