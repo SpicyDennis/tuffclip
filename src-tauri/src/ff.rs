@@ -54,18 +54,42 @@ pub struct FfInfo {
 /// since the engine asks every tick.
 pub fn has_gfxcapture(ffmpeg: &str) -> bool {
     use std::sync::Mutex;
-    static CACHE: Mutex<Option<(String, Option<std::time::SystemTime>, bool)>> = Mutex::new(None);
-    // The file's modified time is part of the key, so replacing ffmpeg.exe in place is noticed.
+    static CACHE: Cache = Mutex::new(None);
+    cached(&CACHE, ffmpeg, || {
+        let out = cmd(ffmpeg).args(["-hide_banner", "-filters"]).stdin(Stdio::null()).output();
+        let Ok(out) = out else { return true }; // ffmpeg missing: other errors will say so
+        String::from_utf8_lossy(&out.stdout).contains(" gfxcapture ")
+    })
+}
+
+/// Whether `-thread_queue_size` can still be given to an input. Recent FFmpeg master builds
+/// dropped the input side and refuse to start when it's there. Cached per path.
+pub fn input_queue_size_ok(ffmpeg: &str) -> bool {
+    use std::sync::Mutex;
+    static CACHE: Cache = Mutex::new(None);
+    cached(&CACHE, ffmpeg, || {
+        let out = cmd(ffmpeg)
+            .args(["-hide_banner", "-thread_queue_size", "8", "-f", "f32le", "-i", "NUL", "-f", "null", "-"])
+            .stdin(Stdio::null())
+            .output();
+        let Ok(out) = out else { return true };
+        !String::from_utf8_lossy(&out.stderr).contains("cannot be applied to input")
+    })
+}
+
+type Cache = std::sync::Mutex<Option<(String, Option<std::time::SystemTime>, bool)>>;
+
+/// Run `probe` once per ffmpeg path. The file's modified time is part of the key, so
+/// replacing ffmpeg.exe in place is noticed.
+fn cached(cache: &Cache, ffmpeg: &str, probe: impl FnOnce() -> bool) -> bool {
     let stamp = std::fs::metadata(ffmpeg).and_then(|m| m.modified()).ok();
-    let mut c = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    let mut c = cache.lock().unwrap_or_else(|e| e.into_inner());
     if let Some((p, t, v)) = c.as_ref() {
         if p == ffmpeg && *t == stamp {
             return *v;
         }
     }
-    let out = cmd(ffmpeg).args(["-hide_banner", "-filters"]).stdin(Stdio::null()).output();
-    let Ok(out) = out else { return true }; // ffmpeg missing: other errors will say so
-    let v = String::from_utf8_lossy(&out.stdout).contains(" gfxcapture ");
+    let v = probe();
     *c = Some((ffmpeg.to_string(), stamp, v));
     v
 }

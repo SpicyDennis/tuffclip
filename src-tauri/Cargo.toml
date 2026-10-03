@@ -1,6 +1,6 @@
 [package]
 name = "tuffclip"
-version = "0.15.1"
+version = "0.15.2"
 description = "Lightweight game & desktop clipper"
 edition = "2021"
 

@@ -475,7 +475,10 @@ fn build_args(s: &RecordSpec, audio: Option<AudioFormat>) -> Vec<String> {
         if s.audio_offset_ms != 0 {
             arg!("-itsoffset", format!("{:.3}", s.audio_offset_ms as f64 / 1000.0));
         }
-        arg!("-thread_queue_size", 4096, "-f", "f32le", "-ar", f.rate, "-ac", f.channels, "-i", "pipe:0");
+        if ff::input_queue_size_ok(&s.ffmpeg) {
+            arg!("-thread_queue_size", 4096);
+        }
+        arg!("-f", "f32le", "-ar", f.rate, "-ac", f.channels, "-i", "pipe:0");
     }
 
     let mut vf = if let Some(hwnd) = s.window {
