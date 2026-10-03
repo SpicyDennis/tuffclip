@@ -78,6 +78,10 @@ set "EXE=TUFFClip v%VER%.exe"
 echo [4/%TOTAL%] Copying %EXE% to the build folder...
 if not exist "%OUT%" mkdir "%OUT%"
 del /q "%OUT%\TUFFClip*.exe" >nul 2>nul
+if exist "%OUT%\TUFFClip*.exe" (
+  echo   ERROR: Could not delete the old exe in the build folder. Is TUFFClip still running? Quit it from the tray and retry.
+  goto :fail
+)
 copy /y "%ROOT%src-tauri\target\release\tuffclip.exe" "%OUT%\%EXE%" >nul
 if errorlevel 1 (
   echo   ERROR: Could not copy %EXE%. Is TUFFClip still running? Quit it from the tray and retry.
