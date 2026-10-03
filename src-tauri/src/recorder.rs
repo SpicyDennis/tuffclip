@@ -2,7 +2,7 @@
 //!
 //! One long-lived ffmpeg process does capture + encode entirely on the GPU:
 //!   ddagrab (DXGI Desktop Duplication, frames stay in VRAM as D3D11 textures)
-//!     -> optional scale_d3d11 (GPU)
+//!     -> optional scale_d3d11 (GPU; window capture scales inside gfxcapture instead)
 //!     -> NVENC / AMF / QSV hardware encoder
 //!     -> either 2-second MPEG-TS segments in a small rotating ring on disk,
 //!        or an MPEG-TS stream on stdout that TUFFClip keeps in a RAM ring.
@@ -503,12 +503,18 @@ fn build_args(s: &RecordSpec) -> Vec<String> {
         arg!("-f", "f32le", "-ar", audio::RATE, "-ac", tracks * 2, "-i", "pipe:0");
     }
 
+    let downscale = (s.height != 0 && s.height < s.src_h).then(|| (even(s.src_w * s.height / s.src_h), even(s.height)));
     let mut vf = if let Some(hwnd) = s.window {
         // Window capture: only this window's pixels, however many windows are on top of it.
         // Frames only arrive when the window changes, so `fps` fills the gaps to keep a steady rate.
         // A resized window is letterboxed into the original size instead of restarting the recording.
         // The capture card window is scaled to the card's own resolution, whatever size the window is.
-        let size = if s.force_size { format!("width={}:height={}", s.src_w, s.src_h) } else { "width=-2:height=-2".into() };
+        // gfxcapture scales on its own: its frames can't go through scale_d3d11 ("Unsupported pixel format").
+        let size = match (downscale, s.force_size) {
+            (Some((w, h)), _) => format!("width={w}:height={h}"),
+            (None, true) => format!("width={}:height={}", s.src_w, s.src_h),
+            (None, false) => "width=-2:height=-2".into(),
+        };
         format!(
             "gfxcapture=hwnd={hwnd}:capture_cursor={}:display_border=0:max_framerate={}:{size}:resize_mode=scale_aspect,fps={}",
             s.draw_mouse as u8, s.fps, s.fps
@@ -523,9 +529,8 @@ fn build_args(s: &RecordSpec) -> Vec<String> {
         }
         v
     };
-    if s.height != 0 && s.height < s.src_h {
-        let w = even(s.src_w * s.height / s.src_h);
-        vf += &format!(",scale_d3d11={}:{}", w, even(s.height));
+    if let (Some((w, h)), None) = (downscale, s.window) {
+        vf += &format!(",scale_d3d11={w}:{h}");
     }
     if s.encoder == Encoder::Qsv {
         vf += ",hwmap=derive_device=qsv,format=qsv";
