@@ -3,6 +3,7 @@ name = "tuffclip"
 version = "1.0.0"
 description = "Lightweight game & desktop clipper"
 edition = "2021"
+license = "MIT"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }

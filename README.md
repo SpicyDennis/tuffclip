@@ -141,3 +141,7 @@ src-tauri/src/
 ui/            index.html, style.css, app.js (no framework, no build step)
                capture.html/.css/.js: the capture card window
 ```
+
+## License
+
+MIT, see [LICENSE](LICENSE).
