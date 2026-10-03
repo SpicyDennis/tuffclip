@@ -127,6 +127,25 @@ fn autostart_enabled() -> bool {
     reg(&["query", RUN_KEY, "/v", "TUFFClip"]).map(|s| s.success()).unwrap_or(false)
 }
 
+/// Start with Windows is on but points at another exe (a new build or update replaced the one it
+/// named): point it at this one. Leaves the entry alone when it is off or already right.
+fn fix_autostart_path() {
+    let Ok(out) = std::process::Command::new("reg")
+        .args(["query", RUN_KEY, "/v", "TUFFClip"])
+        .creation_flags(0x0800_0000)
+        .stderr(std::process::Stdio::null())
+        .output()
+    else { return };
+    if !out.status.success() {
+        return; // off
+    }
+    let Ok(exe) = std::env::current_exe() else { return };
+    let current = String::from_utf8_lossy(&out.stdout).to_lowercase();
+    if !current.contains(&exe.display().to_string().to_lowercase()) {
+        let _ = set_autostart(true);
+    }
+}
+
 fn set_autostart(on: bool) -> Result<(), String> {
     let _ = reg(&["delete", RUN_KEY, "/v", "Clipr", "/f"]); // entry from before the rename
     if on {
@@ -832,9 +851,10 @@ fn main() {
             start_key_poll(app.handle().clone());
             std::thread::spawn(move || {
                 update::clean_up();
-                // The exe may have a new name now: point "Start with Windows" at it.
-                if updated && autostart_enabled() {
-                    let _ = set_autostart(true);
+                // A new version may have a new name (update, new build): point "Start with Windows" at it.
+                // Not from dev builds, which would take the entry over from the real exe.
+                if updated || !cfg!(debug_assertions) {
+                    fix_autostart_path();
                 }
                 // First start of the day: ask GitHub (the window shows the result when it opens).
                 if check_updates {
