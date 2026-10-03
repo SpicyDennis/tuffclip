@@ -9,6 +9,7 @@ mod library;
 mod overlay;
 mod preview;
 mod recorder;
+mod sound;
 mod tray;
 mod win;
 
@@ -366,19 +367,31 @@ async fn playback_proxy(eng: Eng<'_>, path: String) -> Result<String, String> {
         ]).arg(&tmp);
         ff::run(c).map_err(|e| format!("{e:#}"))?;
         std::fs::rename(&tmp, &out).map_err(e2s)?;
-        // Keep the cache small: drop the oldest copies beyond 8.
-        if let Ok(rd) = std::fs::read_dir(&dir) {
-            let mut files: Vec<_> = rd.flatten().filter_map(|e| Some((e.metadata().ok()?.modified().ok()?, e.path()))).collect();
-            files.sort();
-            let extra = files.len().saturating_sub(8);
-            for (_, p) in files.into_iter().take(extra) {
-                let _ = std::fs::remove_file(p);
-            }
-        }
+        sound::prune(&dir);
         Ok(out.to_string_lossy().into_owned())
     })
     .await
     .map_err(e2s)?
+}
+
+/// The clip's sound tracks, each decoded for the viewer with its waveform.
+#[tauri::command]
+async fn clip_audio(eng: Eng<'_>, path: String) -> Result<Vec<sound::TrackInfo>, String> {
+    let src = inside_clips_dir(&eng, &path)?;
+    let (ffmpeg, dir) = {
+        let c = eng.cfg.lock();
+        (c.ffmpeg.clone(), std::path::PathBuf::from(&c.clips_dir).join(".playback"))
+    };
+    tauri::async_runtime::spawn_blocking(move || sound::tracks(&ffmpeg, &src, &dir))
+        .await
+        .map_err(e2s)?
+        .map_err(|e| format!("{e:#}"))
+}
+
+/// Microphones for Settings > Audio.
+#[tauri::command]
+async fn list_mics() -> Result<Vec<audio::MicInfo>, String> {
+    tauri::async_runtime::spawn_blocking(audio::list_mics).await.map_err(e2s)
 }
 
 #[tauri::command]
@@ -535,7 +548,7 @@ fn gate_camera(app: &AppHandle, w: &tauri::WebviewWindow) {
                         COREWEBVIEW2_PERMISSION_STATE_DENY
                     };
                     args.SetState(state)?;
-                    if let Ok(a3) = windows_core::Interface::cast::<ICoreWebView2PermissionRequestedEventArgs3>(&args) {
+                    if let Ok(a3) = wv_core::Interface::cast::<ICoreWebView2PermissionRequestedEventArgs3>(&args) {
                         let _ = a3.SetSavesInProfile(false);
                     }
                 }
@@ -707,6 +720,8 @@ fn main() {
             }
         })
         .invoke_handler(tauri::generate_handler![
+            clip_audio,
+            list_mics,
             get_config,
             save_config,
             reset_config,

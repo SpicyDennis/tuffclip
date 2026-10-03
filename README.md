@@ -18,7 +18,7 @@ This is the same pipeline ShadowPlay and SteelSeries Moments use, so the in-game
 - **No UI while you play.** Closing the window destroys the webview completely; TUFFClip lives in the tray. The UI only exists when you open it.
 - **Games mode** runs nothing at all until one of your listed games is running, and stops when it exits. The last buffer stays saveable for a few minutes afterwards (Settings > Capture).
 - **ffmpeg is tied to TUFFClip with a Job Object**, so it can never be left running orphaned, even after a crash.
-- **System audio** is captured with WASAPI loopback and paced in 10 ms chunks (silence-filled), so ffmpeg never stalls.
+- **Sound on separate tracks.** By default only the game's own sound is recorded (Windows per-app capture), with Discord and your microphone (optional) on tracks of their own; or pick "everything you hear" for one desktop track. All tracks go to ffmpeg through one pipe, paced in 10 ms chunks (silence-filled), so they stay in sync and ffmpeg never stalls. Each clip starts with a mix of all tracks, so it sounds right in any player; a Discord or mic track that stayed silent is left out of that clip.
 
 ## Requirements
 
@@ -70,13 +70,15 @@ Close OBS or any other app using the card first: Windows lets only one program u
 | Choice | What happens | Speed |
 |---|---|---|
 | Original quality, same codec | Stream copy, no quality loss. Cuts snap to the nearest keyframe (≤ 2 s). | Instant |
-| Original quality, other codec | GPU re-encode (H.264 ⇄ HEVC) at a quality-matched bitrate; HEVC needs about 35% less. Audio is copied. | Fast |
+| Original quality, other codec | GPU re-encode (H.264 ⇄ HEVC) at a quality-matched bitrate; HEVC needs about 35% less. Audio is copied (or mixed, see below). | Fast |
 | 10/25/50/100 MB or custom | GPU encode at a computed bitrate; re-done once if it overshoots. | Fast |
 | + "Exact size" | x264 / x265 two-pass on the CPU. Lands closest to the target. | Slower |
 | `.webm` | Always re-encoded as VP9 + Opus on the CPU. | Slow |
 | `.gif` | Looping, no sound. Frame rate (10-30 fps) and size (240p-720p) are chosen next to the Export button; up to 60 s. | Medium |
 
 "Auto" resolution drops to 1080p/720p/480p when the size budget is too small to look good. File type (`.mp4`, `.mkv`, `.mov`, `.webm`, `.gif`) and codec are chosen per export, next to the Export button. H.263 is not offered: it is a 1990s codec that only supports a handful of fixed frame sizes, compresses far worse than H.264 and has no GPU encoder.
+
+**Sound levels:** under the trim bar the Library shows each sound track (game, Discord, mic) with its waveform, a Mute button and a level slider (0-200%; double-click for 100%). You hear the changes while watching, they're remembered per clip, and exports mix the tracks into one at those levels. With the levels untouched, exports keep the clip's own mix (no re-encode).
 
 TUFFClip remembers which raw clips you've exported; Settings > Storage can delete the ones that already have a trimmed version.
 
@@ -90,9 +92,9 @@ TUFFClip remembers which raw clips you've exported; Settings > Storage can delet
 
 - By default only the **game's own window** is recorded, so windows in front of it never show. A few games (some exclusive-fullscreen ones) can come out black this way; switch Settings > Capture > Capture method to *Whole display* for those.
 - Clip length is accurate to about ±2 s (segment granularity).
-- Switching your default audio device while recording keeps capturing the old device until recording restarts (change any setting or restart the game).
+- Game-only sound needs Windows 10 version 2004 or newer; on older Windows the game track falls back to everything you hear. Programs that play sound through another process (some launchers, Windows system sounds) aren't caught by per-app capture.
+- The Discord track is everything Discord plays (calls and its notification sounds); TUFFClip can't tell a call apart from other Discord sounds.
 - HEVC clips play in the built-in player only if Microsoft's HEVC Video Extensions are installed. H.264 always plays.
-- Microphone capture isn't included yet. It would go in `audio.rs` as a second cpal stream mixed into the same pacer.
 
 ## Code map
 
@@ -102,7 +104,8 @@ src-tauri/src/
   tray.rs      tray icon (recording dot) and tooltip
   engine.rs    1 Hz watcher: which game is up, keep ffmpeg running, hold the buffer after a game closes, save clips
   recorder.rs  builds the ffmpeg capture command; stitches segments into clips
-  audio.rs     WASAPI loopback -> paced f32 stream to ffmpeg stdin
+  audio.rs     WASAPI capture per track (game / Discord / desktop / mic) -> one paced multichannel f32 stream to ffmpeg stdin
+  sound.rs     a clip's tracks for the viewer: decoded .flac copies + waveforms
   export.rs    trim / codec / target-size export with progress
   library.rs   lists clips by game folder, remembers which raws were exported, storage totals
   win.rs       DXGI monitors, game windows, memory info, job object

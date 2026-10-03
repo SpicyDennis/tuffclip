@@ -87,6 +87,65 @@ pub struct ExportRequest {
     /// Idle priority and fewer threads, so a running game isn't affected.
     #[serde(default)]
     pub low_impact: bool,
+    /// Sound levels set in the viewer: which of the clip's audio tracks to mix, and how loud
+    /// (1.0 = as recorded). None = the clip's first track as it is.
+    #[serde(default)]
+    pub levels: Option<Vec<Level>>,
+}
+
+#[derive(Debug, Deserialize, Clone, Copy)]
+pub struct Level {
+    /// The clip's audio track (`0:a:N`).
+    pub index: usize,
+    pub gain: f64,
+}
+
+/// What goes on the exported file's (single) sound track.
+enum Sound {
+    None,
+    /// One of the clip's tracks as it is (stream copy is possible).
+    Track(usize),
+    /// Several tracks, or one at a changed level: always re-encoded.
+    Mix(Vec<Level>),
+}
+
+impl Sound {
+    fn of(req: &ExportRequest) -> Sound {
+        let Some(levels) = &req.levels else { return Sound::Track(0) };
+        let on: Vec<Level> = levels.iter().copied().filter(|l| l.gain > 0.001).map(|l| Level { gain: l.gain.min(4.0), ..l }).collect();
+        match on.as_slice() {
+            [] => Sound::None,
+            [one] if (one.gain - 1.0).abs() < 0.001 => Sound::Track(one.index),
+            _ => Sound::Mix(on),
+        }
+    }
+
+    fn needs_encode(&self) -> bool {
+        matches!(self, Sound::Mix(_))
+    }
+
+    /// `-filter_complex` + `-map` arguments for the sound (the video is mapped separately).
+    fn maps(&self) -> Vec<String> {
+        match self {
+            Sound::None => vec!["-an".into()],
+            Sound::Track(i) => vec!["-map".into(), format!("0:a:{i}?")],
+            Sound::Mix(levels) => {
+                let mut g = String::new();
+                for (k, l) in levels.iter().enumerate() {
+                    g += &format!("[0:a:{}]volume={:.3}[l{k}];", l.index, l.gain);
+                }
+                if levels.len() == 1 {
+                    g += "[l0]anull[snd]";
+                } else {
+                    for k in 0..levels.len() {
+                        g += &format!("[l{k}]");
+                    }
+                    g += &format!("amix=inputs={}:normalize=0:duration=longest[snd]", levels.len());
+                }
+                vec!["-filter_complex".into(), g, "-map".into(), "[snd]".into()]
+            }
+        }
+    }
 }
 
 fn unique(p: PathBuf) -> PathBuf {
@@ -162,6 +221,7 @@ pub fn export(cfg: &Config, req: &ExportRequest, progress: impl Fn(f64)) -> Resu
 
     let fmt = req.format;
     let ext = fmt.ext();
+    let sound = Sound::of(req);
     let webm = fmt == ExportFormat::Webm;
     let gif = fmt == ExportFormat::Gif;
 
@@ -230,12 +290,18 @@ pub fn export(cfg: &Config, req: &ExportRequest, progress: impl Fn(f64)) -> Resu
         return Ok(out);
     }
 
-    // ---- no re-encode
+    // ---- no re-encode (only the sound, if its levels were changed)
     if !size_mode && !rate_mode && !webm && !recode {
-        let mut c = ff::cmd(&cfg.ffmpeg);
+        let mut c = if sound.needs_encode() { ff::cmd_prio(&cfg.ffmpeg, req.low_impact) } else { ff::cmd(&cfg.ffmpeg) };
         c.args(["-hide_banner", "-loglevel", "error", "-y", "-ss", &ss, "-i"])
             .arg(&input)
-            .args(["-t", &t, "-map", "0", "-c", "copy", "-avoid_negative_ts", "make_zero"]);
+            .args(["-t", &t, "-map", "0:v:0"])
+            .args(sound.maps())
+            .args(["-c", "copy"]);
+        if sound.needs_encode() {
+            c.args(["-c:a", "aac", "-b:a", "192k"]);
+        }
+        c.args(["-avoid_negative_ts", "make_zero"]);
         if faststart {
             c.args(["-movflags", "+faststart"]);
         }
@@ -304,7 +370,7 @@ pub fn export(cfg: &Config, req: &ExportRequest, progress: impl Fn(f64)) -> Resu
             let r = r1.and_then(|_| {
                 let mut p2 = ff::cmd_prio(&cfg.ffmpeg, req.low_impact);
                 base(&mut p2);
-                p2.args(["-map", "0:v:0", "-map", "0:a?", "-c:v", vcodec_cpu, "-b:v", &vb, "-threads", &threads])
+                p2.args(["-map", "0:v:0"]).args(sound.maps()).args(["-c:v", vcodec_cpu, "-b:v", &vb, "-threads", &threads])
                     .args(vp9_flags)
                     .args(["-pass", "2", "-passlogfile", &logs, "-c:a", acodec, "-b:a", &ab])
                     .arg(&out);
@@ -315,7 +381,7 @@ pub fn export(cfg: &Config, req: &ExportRequest, progress: impl Fn(f64)) -> Resu
         } else {
             let mut c = ff::cmd_prio(&cfg.ffmpeg, req.low_impact);
             base(&mut c);
-            c.args(["-map", "0:v:0", "-map", "0:a?", "-c:v", vcodec_cpu, "-b:v", &vb, "-threads", &threads])
+            c.args(["-map", "0:v:0"]).args(sound.maps()).args(["-c:v", vcodec_cpu, "-b:v", &vb, "-threads", &threads])
                 .args(vp9_flags)
                 .args(["-c:a", acodec, "-b:a", &ab])
                 .arg(&out);
@@ -358,7 +424,7 @@ pub fn export(cfg: &Config, req: &ExportRequest, progress: impl Fn(f64)) -> Resu
             let mut p2 = ff::cmd_prio(&cfg.ffmpeg, req.low_impact);
             p2.current_dir(&tmp);
             base(&mut p2);
-            p2.args(["-map", "0:v:0", "-map", "0:a?", "-c:v", vcodec_cpu, "-preset", "medium", "-threads", &threads, "-b:v", &vb])
+            p2.args(["-map", "0:v:0"]).args(sound.maps()).args(["-c:v", vcodec_cpu, "-preset", "medium", "-threads", &threads, "-b:v", &vb])
                 .args(pass_args(2))
                 .args(["-pix_fmt", "yuv420p", "-c:a", acodec, "-b:a", &ab])
                 .args(&mov_flags)
@@ -382,7 +448,7 @@ pub fn export(cfg: &Config, req: &ExportRequest, progress: impl Fn(f64)) -> Resu
         let vb = format!("{video_kbps}k");
         let mut c = ff::cmd_prio(&cfg.ffmpeg, req.low_impact);
         base(&mut c);
-        c.args(["-map", "0:v:0", "-map", "0:a?", "-c:v", &enc]);
+        c.args(["-map", "0:v:0"]).args(sound.maps()).args(["-c:v", &enc]);
         match cfg.encoder {
             // p5 instead of p6: nearly the same quality for a fraction of the GPU time.
             Encoder::Nvenc => c.args(["-preset", "p5", "-rc", "cbr", "-multipass", "qres"]),
@@ -390,7 +456,7 @@ pub fn export(cfg: &Config, req: &ExportRequest, progress: impl Fn(f64)) -> Resu
             Encoder::Qsv => c.args(["-preset", "medium"]),
         };
         c.args(["-b:v", &vb, "-maxrate", &vb, "-bufsize", &vb, "-pix_fmt", "nv12"]);
-        if recode {
+        if recode && !sound.needs_encode() {
             c.args(["-c:a", "copy"]);
         } else {
             c.args(["-c:a", acodec, "-b:a", &ab]);

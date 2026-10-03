@@ -106,6 +106,16 @@
           </div>
         </div>
 
+        <div class="sound" id="sound" hidden>
+          <div class="sound-head">
+            <span class="label">Sound</span>
+            <span class="hint" id="soundHint"></span>
+            <div class="grow"></div>
+            <button class="btn sm ghost" id="resetLevels" hidden>Reset levels</button>
+          </div>
+          <div class="tracks" id="tracks"></div>
+        </div>
+
         <div class="export">
           <div class="size-row">
             <span class="label">Export</span>
@@ -382,8 +392,29 @@
         <h3>Audio</h3>
         <p class="hint">Sound that goes into your clips.</p>
         <div class="field">
-          <label class="check"><input type="checkbox" id="audio"> Record what you hear (system audio)</label>
+          <label class="check"><input type="checkbox" id="audio"> Record sound</label>
         </div>
+        <div class="field" id="audioSourceWrap">
+          <label>Main track</label>
+          <div class="seg wide" id="audioSource">
+            <button data-v="game">Just the game</button>
+            <button data-v="desktop">Everything you hear</button>
+          </div>
+          <p class="hint" id="audioSourceHint"></p>
+        </div>
+        <div class="field" id="discordWrap">
+          <label class="check"><input type="checkbox" id="discordTrack"> Put Discord on its own track</label>
+          <p class="hint">Voice chat and Discord's sounds. Clips where Discord stayed silent don't get the track.</p>
+        </div>
+        <div class="field" id="micWrap">
+          <label class="check"><input type="checkbox" id="mic"> Record my microphone on its own track</label>
+        </div>
+        <div class="field" id="micDeviceWrap">
+          <label for="micDevice">Microphone</label>
+          <select id="micDevice"></select>
+          <p class="hint" id="micHint">Recorded as it comes in, without Discord's noise filtering or push-to-talk.</p>
+        </div>
+        <p class="hint" id="tracksHint">Each clip also gets a mix of all tracks first, so it sounds right in any player. In the Library you can change each track's level before exporting.</p>
         <div class="grid">
           <div class="field">
             <label for="audioKbps">Audio bitrate</label>

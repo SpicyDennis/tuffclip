@@ -208,6 +208,30 @@ pub fn process_alive(pid: u32) -> bool {
     }
 }
 
+/// The main Discord process (stable, PTB or Canary): the one whose parent isn't Discord itself,
+/// so capturing its process tree covers the voice and every helper process.
+pub fn discord_pid() -> Option<u32> {
+    use windows::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS,
+    };
+    const NAMES: [&str; 3] = ["discord.exe", "discordptb.exe", "discordcanary.exe"];
+    let mut procs: Vec<(u32, u32)> = Vec::new();
+    unsafe {
+        let snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0).ok()?;
+        let mut e = PROCESSENTRY32W { dwSize: std::mem::size_of::<PROCESSENTRY32W>() as u32, ..Default::default() };
+        let mut more = Process32FirstW(snap, &mut e).is_ok();
+        while more {
+            let name = wide_to_string(&e.szExeFile).to_lowercase();
+            if NAMES.contains(&name.as_str()) {
+                procs.push((e.th32ProcessID, e.th32ParentProcessID));
+            }
+            more = Process32NextW(snap, &mut e).is_ok();
+        }
+        let _ = CloseHandle(snap);
+    }
+    procs.iter().find(|(_, parent)| !procs.iter().any(|(p, _)| p == parent)).map(|(pid, _)| *pid)
+}
+
 #[derive(Serialize)]
 pub struct AppWindow {
     pub exe: String,

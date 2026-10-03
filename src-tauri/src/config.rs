@@ -41,6 +41,16 @@ pub enum CaptureMethod {
     /// Record the whole monitor (cropped to the game's window if it isn't fullscreen).
     Display,
 }
+/// Which sound goes on the main track.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AudioSource {
+    /// Only the game's own sound (Discord and the mic can get their own tracks).
+    Game,
+    /// Everything you hear, on one track.
+    Desktop,
+}
+
 /// Where the small "recording" dot sits on the captured window (or Off).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -86,6 +96,14 @@ pub struct Config {
     pub codec: Codec,
     pub draw_mouse: bool,
     pub audio: bool,
+    /// Game-only sound or everything you hear (desktop capture mode always records everything).
+    pub audio_source: AudioSource,
+    /// With game-only sound: Discord on a track of its own.
+    pub discord_track: bool,
+    /// Record a microphone on a track of its own.
+    pub mic: bool,
+    /// Windows device id of the microphone; empty = the Windows default.
+    pub mic_device: String,
     pub audio_kbps: u32,
     pub audio_offset_ms: i32,
     pub hotkey: String,
@@ -135,6 +153,10 @@ impl Default for Config {
             codec: Codec::Hevc,
             draw_mouse: true,
             audio: true,
+            audio_source: AudioSource::Game,
+            discord_track: true,
+            mic: false,
+            mic_device: String::new(),
             audio_kbps: 160,
             audio_offset_ms: 0,
             hotkey: "Alt+F10".into(),

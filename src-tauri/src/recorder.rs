@@ -11,7 +11,7 @@
 //!
 //! Saving a clip = concatenating the newest segments with `-c copy` (no re-encode),
 //! which takes well under a second.
-use crate::audio::{self, AudioFormat};
+use crate::audio::{self, Layout, Track};
 use crate::config::{Codec, Config, Encoder};
 use crate::{ff, win::{self, MonitorInfo}};
 use anyhow::{bail, Context, Result};
@@ -59,7 +59,8 @@ pub struct RecordSpec {
     pub bitrate_kbps: u32,
     pub encoder: Encoder,
     pub codec: Codec,
-    pub audio: bool,
+    /// Sound sources, one track each (empty = no sound). Set by the engine, which knows the game.
+    pub tracks: Vec<Track>,
     pub audio_kbps: u32,
     pub audio_offset_ms: i32,
     pub draw_mouse: bool,
@@ -95,7 +96,7 @@ impl RecordSpec {
             bitrate_kbps: cfg.bitrate_kbps,
             encoder: cfg.encoder,
             codec: cfg.codec,
-            audio: cfg.audio,
+            tracks: Vec::new(),
             audio_kbps: cfg.audio_kbps,
             audio_offset_ms: cfg.audio_offset_ms,
             draw_mouse: cfg.draw_mouse,
@@ -300,6 +301,14 @@ pub struct Recorder {
     stop_audio: Option<Arc<AtomicBool>>,
     started: Option<Instant>,
     ram: Option<Arc<RamBuf>>,
+    layout: Option<Layout>,
+}
+
+/// A stopped recording's buffer, kept so a clip can still be saved from it.
+pub struct Kept {
+    pub dir: PathBuf,
+    pub ram: Option<Arc<RamBuf>>,
+    pub layout: Option<Layout>,
 }
 
 impl Recorder {
@@ -309,6 +318,10 @@ impl Recorder {
 
     pub fn ram(&self) -> Option<Arc<RamBuf>> {
         self.ram.clone()
+    }
+
+    pub fn layout(&self) -> Option<Layout> {
+        self.layout.clone()
     }
 
     pub fn is_alive(&mut self) -> bool {
@@ -355,8 +368,7 @@ impl Recorder {
             clear_buffer(&spec.buffer_dir)?;
         }
 
-        let fmt = if spec.audio { audio::loopback_format() } else { None };
-        let args = build_args(&spec, fmt);
+        let args = build_args(&spec);
 
         // Keep the log from growing forever.
         if fs::metadata(log_path).map(|m| m.len() > 4 << 20).unwrap_or(false) {
@@ -369,7 +381,7 @@ impl Recorder {
         cmd.args(&args)
             .stdout(if spec.ram { Stdio::piped() } else { Stdio::null() })
             .stderr(Stdio::from(log))
-            .stdin(if fmt.is_some() { Stdio::piped() } else { Stdio::null() });
+            .stdin(if spec.tracks.is_empty() { Stdio::null() } else { Stdio::piped() });
         let mut child = cmd
             .spawn()
             .with_context(|| format!("Couldn't start ffmpeg (\"{}\"). Is it installed?", spec.ffmpeg))?;
@@ -383,11 +395,13 @@ impl Recorder {
             self.ram = Some(ram);
         }
 
-        if let Some(fmt) = fmt {
+        if !spec.tracks.is_empty() {
             let stdin = child.stdin.take().expect("piped stdin");
             let stop = Arc::new(AtomicBool::new(false));
-            audio::spawn_loopback(stdin, fmt, stop.clone());
+            let layout = Layout::new(&spec.tracks);
+            audio::spawn(stdin, &spec.tracks, &layout, stop.clone());
             self.stop_audio = Some(stop);
+            self.layout = Some(layout);
         }
 
         self.child = Some(child);
@@ -404,15 +418,16 @@ impl Recorder {
 
     /// Stop ffmpeg but hand back what the buffer holds, so a clip can still be saved afterwards.
     /// Returns None if nothing was running or the buffer is empty.
-    pub fn stop_and_keep(&mut self) -> Option<(PathBuf, Option<Arc<RamBuf>>)> {
+    pub fn stop_and_keep(&mut self) -> Option<Kept> {
         let spec = self.spec.clone()?;
         let ram = self.ram.clone();
+        let layout = self.layout.clone();
         let has_data = match &ram {
             Some(r) => r.bytes() > 0,
             None => dir_bytes(&spec.buffer_dir) > 0,
         };
         self.stop();
-        has_data.then_some((spec.buffer_dir, ram))
+        has_data.then_some(Kept { dir: spec.buffer_dir, ram, layout })
     }
 
     pub fn stop(&mut self) {
@@ -426,6 +441,7 @@ impl Recorder {
         self.spec = None;
         self.started = None;
         self.ram = None;
+        self.layout = None;
     }
 }
 
@@ -460,25 +476,27 @@ fn even(x: u32) -> u32 {
     (x / 2 * 2).max(2)
 }
 
-fn build_args(s: &RecordSpec, audio: Option<AudioFormat>) -> Vec<String> {
+fn build_args(s: &RecordSpec) -> Vec<String> {
+    let tracks = s.tracks.len();
     let mut a: Vec<String> = Vec::new();
     macro_rules! arg { ($($x:expr),* $(,)?) => {{ $( a.push($x.to_string()); )* }} }
 
     arg!("-hide_banner", "-loglevel", "warning", "-y");
-    if audio.is_none() {
+    if tracks == 0 {
         arg!("-nostdin");
     }
     // Create the D3D11 device on the adapter that owns this monitor.
     arg!("-init_hw_device", format!("d3d11va=d3d:{}", s.adapter), "-filter_hw_device", "d3d");
 
-    if let Some(f) = audio {
+    if tracks > 0 {
         if s.audio_offset_ms != 0 {
             arg!("-itsoffset", format!("{:.3}", s.audio_offset_ms as f64 / 1000.0));
         }
         if ff::input_queue_size_ok(&s.ffmpeg) {
             arg!("-thread_queue_size", 4096);
         }
-        arg!("-f", "f32le", "-ar", f.rate, "-ac", f.channels, "-i", "pipe:0");
+        // All tracks interleaved as one stream: track 0 left/right, track 1 left/right, ...
+        arg!("-f", "f32le", "-ar", audio::RATE, "-ac", tracks * 2, "-i", "pipe:0");
     }
 
     let mut vf = if let Some(hwnd) = s.window {
@@ -509,6 +527,19 @@ fn build_args(s: &RecordSpec, audio: Option<AudioFormat>) -> Vec<String> {
         vf += ",hwmap=derive_device=qsv,format=qsv";
     }
     vf += "[v]";
+    if tracks > 1 {
+        // Split the pipe back into one stereo track per source, plus a mix of them all first,
+        // so the clip sounds right in any player (which only plays the first track).
+        vf += &format!(";[0:a]asplit={}[mixin]", tracks + 1);
+        for i in 0..tracks {
+            vf += &format!("[in{i}]");
+        }
+        let sum = |side: usize| (0..tracks).map(|i| format!("c{}", i * 2 + side)).collect::<Vec<_>>().join("+");
+        vf += &format!(";[mixin]pan=stereo|c0={}|c1={}[amix]", sum(0), sum(1));
+        for i in 0..tracks {
+            vf += &format!(";[in{i}]pan=stereo|c0=c{}|c1=c{}[a{i}]", i * 2, i * 2 + 1);
+        }
+    }
     arg!("-filter_complex", vf, "-map", "[v]");
 
     let codec = match s.codec { Codec::H264 => "h264", Codec::Hevc => "hevc" };
@@ -529,8 +560,16 @@ fn build_args(s: &RecordSpec, audio: Option<AudioFormat>) -> Vec<String> {
         "-g", gop, "-keyint_min", gop,
     );
 
-    if audio.is_some() {
-        arg!("-map", "0:a", "-c:a", "aac", "-b:a", format!("{}k", s.audio_kbps), "-ac", 2);
+    if tracks == 1 {
+        arg!("-map", "0:a");
+    } else if tracks > 1 {
+        arg!("-map", "[amix]");
+        for i in 0..tracks {
+            arg!("-map", format!("[a{i}]"));
+        }
+    }
+    if tracks > 0 {
+        arg!("-c:a", "aac", "-b:a", format!("{}k", s.audio_kbps), "-ac", 2);
     }
 
     if s.ram {
@@ -561,8 +600,23 @@ fn prepare_out(out: &Path) -> Result<()> {
     Ok(())
 }
 
+/// `-map` arguments for the sound of a saved clip: the chosen buffer streams with their titles
+/// (None = every audio stream, untitled).
+fn audio_maps(sel: Option<&[(usize, String)]>) -> Vec<String> {
+    let Some(sel) = sel else { return vec!["-map".into(), "0:a?".into()] };
+    let mut a = Vec::new();
+    for (k, (i, title)) in sel.iter().enumerate() {
+        a.extend(["-map".into(), format!("0:a:{i}")]);
+        a.extend([format!("-metadata:s:a:{k}"), format!("title={title}")]);
+        a.extend([format!("-metadata:s:a:{k}"), format!("handler_name={title}")]);
+        a.extend([format!("-disposition:a:{k}"), (if k == 0 { "default" } else { "0" }).into()]);
+    }
+    a
+}
+
 /// Stitch the newest segments into an mp4 at `out`. Stream copy, no re-encode.
-pub fn save_buffer(ffmpeg: &str, buffer_dir: &Path, seconds: u32, out: &Path, gentle: bool) -> Result<()> {
+/// `sound`: which audio streams to keep, and their names (None = all).
+pub fn save_buffer(ffmpeg: &str, buffer_dir: &Path, seconds: u32, out: &Path, gentle: bool, sound: Option<&[(usize, String)]>) -> Result<()> {
     let mut segs: Vec<(SystemTime, PathBuf)> = fs::read_dir(buffer_dir)?
         .flatten()
         .filter_map(|e| {
@@ -599,7 +653,9 @@ pub fn save_buffer(ffmpeg: &str, buffer_dir: &Path, seconds: u32, out: &Path, ge
     let mut c = if gentle { ff::cmd_low(ffmpeg) } else { ff::cmd(ffmpeg) };
     c.args(["-hide_banner", "-loglevel", "error", "-y", "-f", "concat", "-safe", "0", "-i"])
         .arg(&list)
-        .args(["-map", "0", "-c", "copy", "-movflags", "+faststart"])
+        .args(["-map", "0:v:0"])
+        .args(audio_maps(sound))
+        .args(["-c", "copy", "-movflags", "+faststart"])
         .arg(out);
     let r = ff::run(c);
     let _ = fs::remove_file(&list);
@@ -607,7 +663,7 @@ pub fn save_buffer(ffmpeg: &str, buffer_dir: &Path, seconds: u32, out: &Path, ge
 }
 
 /// Same as `save_buffer`, but the segments come from memory and are piped into ffmpeg.
-pub fn save_ram(ffmpeg: &str, ram: &RamBuf, seconds: u32, out: &Path, gentle: bool) -> Result<()> {
+pub fn save_ram(ffmpeg: &str, ram: &RamBuf, seconds: u32, out: &Path, gentle: bool, sound: Option<&[(usize, String)]>) -> Result<()> {
     let need = (seconds.div_ceil(SEG_SECS) + 1) as usize;
     let (header, parts) = ram.snapshot(need);
     if parts.is_empty() {
@@ -617,10 +673,10 @@ pub fn save_ram(ffmpeg: &str, ram: &RamBuf, seconds: u32, out: &Path, gentle: bo
 
     let mut c = if gentle { ff::cmd_low(ffmpeg) } else { ff::cmd(ffmpeg) };
     c.args([
-        "-hide_banner", "-loglevel", "error", "-y", "-f", "mpegts", "-i", "pipe:0",
-        "-map", "0:v:0", "-map", "0:a?", "-c", "copy", "-avoid_negative_ts", "make_zero",
-        "-movflags", "+faststart",
+        "-hide_banner", "-loglevel", "error", "-y", "-f", "mpegts", "-i", "pipe:0", "-map", "0:v:0",
     ])
+    .args(audio_maps(sound))
+    .args(["-c", "copy", "-avoid_negative_ts", "make_zero", "-movflags", "+faststart"])
     .arg(out)
     .stdin(Stdio::piped())
     .stdout(Stdio::null())

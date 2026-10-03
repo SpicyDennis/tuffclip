@@ -425,6 +425,7 @@ function selectClip(clip) {
   renderList();
   renderTrim();
   const path = clip.path;
+  loadSound(path);
   invoke("probe_clip", { path }).then((c) => {
     if (!S.sel || S.sel.path !== path) return;
     S.srcCodec = c;
@@ -436,6 +437,9 @@ function selectClip(clip) {
 // The embedded WebView2 often can't decode HEVC (black picture), so those clips play from an
 // H.264 copy made on demand; the file itself is untouched.
 async function loadVideo(path, codec) {
+  // The video's sound can only go through Web Audio (for the track levels) when it was fetched
+  // with CORS. If that fails, the error handler loads it again without.
+  if (video.dataset.noCors !== "1") video.crossOrigin = "anonymous";
   if (codec !== "hevc") { video.src = convertFileSrc(path); return; }
   toast("Preparing a preview of this HEVC clip…");
   try {
@@ -448,6 +452,7 @@ async function loadVideo(path, codec) {
 }
 
 function closeClip() {
+  clearSound();
   S.sel = null;
   S.keep = null;
   S.previewing = false;
@@ -476,6 +481,13 @@ video.addEventListener("loadedmetadata", () => {
 video.addEventListener("timeupdate", renderHead);
 video.addEventListener("error", () => {
   if (S.keep) return; // we removed the source on purpose (rename)
+  const src = video.getAttribute("src");
+  if (src && video.crossOrigin && !snd.routed) {
+    video.dataset.noCors = "1";
+    video.removeAttribute("crossorigin");
+    video.src = src;
+    return;
+  }
   if (video.getAttribute("src")) toast("This clip can't be played here. HEVC needs Microsoft's HEVC Video Extensions.", true);
 });
 
@@ -537,6 +549,7 @@ title.addEventListener("change", async () => {
   video.load(); // release the file handle before renaming
   try {
     const np = await invoke("rename_clip", { path: S.sel.path, name });
+    moveLevels(S.sel.path, np);
     S.sel = { ...S.sel, path: np, name: stemOf(np) };
     title.value = S.sel.name;
     toast("Renamed");
@@ -564,10 +577,12 @@ function renderTrim() {
   $("#tcEnd").textContent = fmtTime(S.end);
   $("#tcLen").textContent = S.dur ? `${(S.end - S.start).toFixed(1)} s selected` : "";
   renderHead();
+  if (snd.tracks.length) drawWaves();
   renderExport();
 }
 function renderHead() {
   $("#tlHead").style.left = pct(video.currentTime || 0) + "%";
+  renderSoundHead();
 }
 function timeAt(clientX) {
   const r = tl.getBoundingClientRect();
@@ -618,6 +633,229 @@ document.addEventListener("keydown", (e) => {
   else if (k === "o") setEnd(video.currentTime);
   else if (k === " " && document.activeElement !== video) { e.preventDefault(); video.paused ? video.play() : video.pause(); }
 });
+
+// ------------------------------------------------------------------ sound tracks
+// WebView2 only plays a video's first sound track, so each track plays from its own decoded
+// copy, through a Web Audio gain, in step with the video. The video's own sound is silenced
+// while they play; its volume and mute buttons still work as the master volume.
+const snd = { ctx: null, master: null, vgain: null, routed: false, tracks: [], path: "", hasMix: false };
+const LEVELS_KEY = "clipr.levels";
+
+function audioCtx() {
+  if (!snd.ctx) {
+    snd.ctx = new AudioContext();
+    snd.master = snd.ctx.createGain();
+    snd.master.connect(snd.ctx.destination);
+    applyMaster();
+  }
+  return snd.ctx;
+}
+function applyMaster() {
+  if (snd.master) snd.master.gain.value = video.muted ? 0 : video.volume;
+}
+// The video's own sound goes through the graph too, so the master volume covers it and it
+// can be silenced while the tracks play. Done once: an element can't be routed twice.
+function routeVideo() {
+  if (snd.routed || video.crossOrigin !== "anonymous") return;
+  try {
+    const ctx = audioCtx();
+    snd.vgain = ctx.createGain();
+    ctx.createMediaElementSource(video).connect(snd.vgain).connect(snd.master);
+    snd.routed = true;
+  } catch {}
+}
+
+const levelsOf = (path) => store.get(LEVELS_KEY, {})[path] || {};
+function saveLevels() {
+  if (!snd.path) return;
+  const all = store.get(LEVELS_KEY, {});
+  const mine = {};
+  for (const t of snd.tracks) if (t.gain !== 1 || t.muted) mine[t.index] = { gain: t.gain, muted: t.muted };
+  delete all[snd.path];
+  if (Object.keys(mine).length) all[snd.path] = mine; // re-added last: newest at the end
+  const keys = Object.keys(all);
+  for (const k of keys.slice(0, Math.max(0, keys.length - 300))) delete all[k]; // keep the newest 300 clips
+  store.set(LEVELS_KEY, all);
+}
+function moveLevels(from, to) {
+  const all = store.get(LEVELS_KEY, {});
+  if (all[from]) { if (to) all[to] = all[from]; delete all[from]; store.set(LEVELS_KEY, all); }
+  if (snd.path === from) snd.path = to || "";
+}
+
+// What the export does with the sound: null = the clip's first track as it is.
+const levelsChanged = () => snd.tracks.some((t) => t.gain !== 1 || t.muted);
+function exportLevels() {
+  // Several tracks but no stored mix (shouldn't happen with TUFFClip's clips): mix them anyway.
+  if (!levelsChanged() && !(snd.tracks.length > 1 && !snd.hasMix)) return null;
+  return snd.tracks.map((t) => ({ index: t.index, gain: t.muted ? 0 : t.gain }));
+}
+
+function clearSound() {
+  for (const t of snd.tracks) {
+    t.el.pause();
+    t.el.removeAttribute("src");
+    t.el.load();
+    try { t.node.disconnect(); } catch {}
+  }
+  snd.tracks = [];
+  snd.path = "";
+  if (snd.vgain) snd.vgain.gain.value = 1;
+  $("#sound").hidden = true;
+  $("#tracks").innerHTML = "";
+}
+
+async function loadSound(path) {
+  clearSound();
+  snd.path = path;
+  $("#sound").hidden = false;
+  $("#resetLevels").hidden = true;
+  $("#soundHint").textContent = "Reading the sound tracks…";
+  let list;
+  try {
+    list = await invoke("clip_audio", { path });
+  } catch (e) {
+    if (snd.path === path) $("#soundHint").textContent = "Couldn't read this clip's sound tracks, so their levels can't be changed.";
+    return;
+  }
+  if (snd.path !== path || !S.sel || S.sel.path !== path) return;
+  if (!list.length) { $("#sound").hidden = true; return; }
+  // Clips with several tracks start with a mix of them all; you edit the parts instead.
+  const parts = list.filter((t) => t.title !== "Mix");
+  const shown = list.length > 1 && parts.length ? parts : list;
+  snd.hasMix = shown.length < list.length;
+  const saved = levelsOf(path);
+  const ctx = audioCtx();
+  routeVideo();
+  snd.tracks = shown.map((t) => {
+    const el = new Audio();
+    el.crossOrigin = "anonymous";
+    el.preload = "auto";
+    el.src = convertFileSrc(t.file);
+    const node = ctx.createGain();
+    ctx.createMediaElementSource(el).connect(node).connect(snd.master);
+    const lv = saved[t.index] || {};
+    const tr = { index: t.index, name: t.title || "Sound", peaks: t.peaks, el, node, gain: lv.gain ?? 1, muted: !!lv.muted };
+    node.gain.value = tr.muted ? 0 : tr.gain;
+    return tr;
+  });
+  // If the video's own sound couldn't be routed, it can't be silenced: keep it and leave the tracks quiet.
+  if (snd.routed) snd.vgain.gain.value = 0;
+  else for (const t of snd.tracks) t.node.disconnect();
+  $("#soundHint").textContent = !snd.routed
+    ? "Levels can't be heard here, but exports use them."
+    : snd.tracks.length > 1 ? "Exports mix the tracks into one at these levels." : "Exports use this level.";
+  renderTracks();
+  syncSound(true);
+  renderExport();
+}
+
+function renderTracks() {
+  $("#tracks").innerHTML = snd.tracks.map((t, i) => `
+    <div class="track${t.muted ? " muted" : ""}" data-i="${i}">
+      <div class="wave"><canvas></canvas><span class="track-name">${esc(t.name)}</span><div class="wave-head"></div></div>
+      <button class="btn sm ghost mute" aria-pressed="${t.muted}">${t.muted ? "Muted" : "Mute"}</button>
+      <input type="range" min="0" max="200" step="5" value="${Math.round(t.gain * 100)}" aria-label="${esc(t.name)} level" title="Double-click for 100%">
+      <span class="lvl">${Math.round(t.gain * 100)}%</span>
+    </div>`).join("");
+  $("#resetLevels").hidden = !levelsChanged();
+  drawWaves();
+  renderSoundHead();
+}
+function setLevel(i, patch) {
+  const t = snd.tracks[i];
+  Object.assign(t, patch);
+  t.node.gain.value = t.muted ? 0 : t.gain;
+  const row = $(`#tracks .track[data-i="${i}"]`);
+  row.classList.toggle("muted", t.muted);
+  row.querySelector(".mute").textContent = t.muted ? "Muted" : "Mute";
+  row.querySelector(".mute").setAttribute("aria-pressed", t.muted);
+  row.querySelector("input").value = Math.round(t.gain * 100);
+  row.querySelector(".lvl").textContent = `${Math.round(t.gain * 100)}%`;
+  $("#resetLevels").hidden = !levelsChanged();
+  drawWave(row, t);
+  saveLevels();
+  renderExport();
+}
+$("#tracks").addEventListener("input", (e) => {
+  const row = e.target.closest(".track");
+  if (row && e.target.type === "range") setLevel(Number(row.dataset.i), { gain: Number(e.target.value) / 100 });
+});
+$("#tracks").addEventListener("dblclick", (e) => {
+  const row = e.target.closest(".track");
+  if (row && e.target.type === "range") setLevel(Number(row.dataset.i), { gain: 1 });
+});
+$("#tracks").addEventListener("click", (e) => {
+  const row = e.target.closest(".track");
+  if (row && e.target.closest(".mute")) setLevel(Number(row.dataset.i), { muted: !snd.tracks[Number(row.dataset.i)].muted });
+});
+// a click on a waveform seeks, like the timeline
+$("#tracks").addEventListener("pointerdown", (e) => {
+  const wave = e.target.closest(".wave");
+  if (!wave || !S.dur) return;
+  const r = wave.getBoundingClientRect();
+  video.currentTime = Math.min(1, Math.max(0, (e.clientX - r.left) / r.width)) * S.dur;
+  renderHead();
+});
+$("#resetLevels").addEventListener("click", () => snd.tracks.forEach((_, i) => setLevel(i, { gain: 1, muted: false })));
+
+// Loudness across the whole clip, dimmed outside the trim, scaled by the track's level.
+function drawWave(row, t) {
+  const cv = row.querySelector("canvas");
+  const w = cv.clientWidth, h = cv.clientHeight;
+  const n = t.peaks.length;
+  if (!w || !h || !n) return;
+  const dpr = window.devicePixelRatio || 1;
+  cv.width = Math.round(w * dpr);
+  cv.height = Math.round(h * dpr);
+  const g = cv.getContext("2d");
+  g.scale(dpr, dpr);
+  const css = getComputedStyle(document.documentElement);
+  const inside = css.getPropertyValue("--muted").trim(), outside = css.getPropertyValue("--idle").trim();
+  const dur = S.dur || n / 20;
+  const level = t.muted ? 0 : Math.sqrt(t.gain); // peaks are square-root scaled
+  const mid = h / 2;
+  for (let x = 0; x < w; x += 2) {
+    const a = Math.floor((x / w) * dur * 20);
+    const b = Math.max(a + 1, Math.floor(((x + 2) / w) * dur * 20));
+    let p = 0;
+    for (let k = a; k < b && k < n; k++) p = Math.max(p, t.peaks[k]);
+    const v = Math.min(1, (p / 255) * level) * (h / 2 - 3);
+    const at = (x / w) * dur;
+    g.fillStyle = at >= S.start && at <= S.end ? inside : outside;
+    g.fillRect(x, mid - v - 0.5, 1.5, v * 2 + 1);
+  }
+}
+function drawWaves() {
+  $$("#tracks .track").forEach((row) => drawWave(row, snd.tracks[Number(row.dataset.i)]));
+}
+function renderSoundHead() {
+  const left = pct(video.currentTime || 0) + "%";
+  $$("#tracks .wave-head").forEach((el) => (el.style.left = left));
+}
+window.addEventListener("resize", () => { if (snd.tracks.length) drawWaves(); });
+
+// keep the tracks in step with the video
+function syncSound(force = false) {
+  if (!snd.tracks.length) return;
+  const t = video.currentTime || 0;
+  for (const tr of snd.tracks) {
+    const el = tr.el;
+    if (force || Math.abs(el.currentTime - t) > 0.08) { try { el.currentTime = t; } catch {} }
+    el.playbackRate = video.playbackRate;
+    if (video.paused || video.seeking) { if (!el.paused) el.pause(); }
+    else if (el.paused) el.play().catch(() => {});
+  }
+}
+video.addEventListener("play", () => { snd.ctx?.resume(); syncSound(true); });
+video.addEventListener("pause", () => syncSound(true));
+video.addEventListener("seeking", () => syncSound(true));
+video.addEventListener("seeked", () => syncSound(true));
+video.addEventListener("waiting", () => snd.tracks.forEach((t) => t.el.pause()));
+video.addEventListener("playing", () => syncSound(true));
+video.addEventListener("ratechange", () => syncSound());
+video.addEventListener("timeupdate", () => syncSound());
+video.addEventListener("volumechange", applyMaster);
 
 // ------------------------------------------------------------------ export
 // rough size of a lossless .png of game footage at the clip's resolution
@@ -788,12 +1026,14 @@ function renderExport() {
       const v = Math.max(500, n.total - 128) * r;
       est = `About <b>${fmtMb(mbAt(v + 128, n.len))}</b>`;
       hint = hevc
-        ? "Re-encodes as HEVC at the same picture quality. It takes longer, and not every player or site takes HEVC. Audio is untouched."
-        : "Re-encodes as H.264 at the same picture quality. It takes longer, but plays everywhere. Audio is untouched.";
+        ? "Re-encodes as HEVC at the same picture quality. It takes longer, and not every player or site takes HEVC."
+        : "Re-encodes as H.264 at the same picture quality. It takes longer, but plays everywhere.";
+      hint += levelsChanged() ? " The sound is mixed at your levels." : " The sound is untouched.";
     } else {
       est = `About <b>${fmtMb(n.mb * (S.format === "mkv" ? 0.99 : 1))}</b>`;
       hint = "Cuts land on the nearest keyframe. Instant and lossless." +
-        (S.format === "mkv" ? " .mkv comes out about 1% smaller than .mp4." : "");
+        (S.format === "mkv" ? " .mkv comes out about 1% smaller than .mp4." : "") +
+        (levelsChanged() ? " Only the sound is re-encoded, to mix it at your levels." : "");
     }
     if (webm && S.mode !== "original") hint += " .webm is re-encoded on the CPU, so it takes longer.";
   }
@@ -871,6 +1111,7 @@ $("#exportBtn").addEventListener("click", async () => {
         low_impact: $("#expLow").checked,
         name: S.nameTouched ? $("#expName").value.trim() : "",
         src_kbps: n.total,
+        levels: exportLevels(),
       },
     });
     toast(`${isPng() ? "Saved" : "Exported"} ${baseName(out)}`);
@@ -910,6 +1151,7 @@ $("#deleteBtn").addEventListener("click", async () => {
   video.load(); // release the file handle before deleting
   try {
     await invoke("delete_clip", { path });
+    moveLevels(path, null);
     closeClip();
     loadClips();
   } catch (e) {
@@ -1096,6 +1338,7 @@ function fillControls(force = false) {
   set("#minToTray", (el) => (el.checked = c.minimize_to_tray));
   set("#beep", (el) => (el.checked = c.beep));
   set("#audio", (el) => (el.checked = c.audio));
+  renderAudio(c);
   set("#gentleSave", (el) => (el.checked = c.gentle_save));
   set("#bufferRam", (el) => (el.checked = c.buffer_in_ram));
   set("#height", (el) => (el.value = String(c.height)));
@@ -1135,7 +1378,40 @@ function fillControls(force = false) {
   $("#customRateUnit").textContent = unitLabel();
 }
 
+// Settings > Audio: which tracks get recorded
+let mics = [];
+function renderAudio(c = S.cfg) {
+  const desktopMode = c.mode === "desktop";
+  const game = c.audio_source === "game" && !desktopMode;
+  setSeg("#audioSource", "v", c.audio_source);
+  $("#audioSourceWrap").hidden = !c.audio;
+  $("#audioSourceHint").textContent = desktopMode
+    ? "You record a monitor, not a game, so the main track is always everything you hear."
+    : game
+      ? "Only the game's own sound: music, videos and other apps stay out of your clips."
+      : "Everything your PC plays, on one track, including Discord and music.";
+  $("#discordWrap").hidden = !c.audio || !game;
+  $("#micWrap").hidden = !c.audio;
+  $("#micDeviceWrap").hidden = !c.audio || !c.mic;
+  $("#tracksHint").hidden = !c.audio || !((game && c.discord_track) || c.mic); // only one track: nothing to mix
+  $("#discordTrack").checked = c.discord_track;
+  $("#mic").checked = c.mic;
+  const missing = c.mic_device && !mics.some((m) => m.id === c.mic_device);
+  const opts = [["", "Windows default"], ...mics.map((m) => [m.id, m.name])];
+  if (missing) opts.push([c.mic_device, "Not plugged in"]);
+  fillSelect($("#micDevice"), opts, c.mic_device || "");
+  $("#micHint").textContent = missing
+    ? "That microphone isn't plugged in, so the Windows default is recorded until it's back."
+    : "Recorded as it comes in, without Discord's noise filtering or push-to-talk.";
+  $("#micHint").classList.toggle("err", !!missing);
+}
+async function loadMics() {
+  try { mics = await invoke("list_mics"); } catch { mics = []; }
+  if (S.cfg) renderAudio();
+}
+
 async function openSettings() {
+  loadMics();
   try { S.monitors = await invoke("list_monitors"); } catch { S.monitors = []; }
   $("#monitorSel").innerHTML = S.monitors
     .map((m) => `<option value="${esc(m.id)}">${esc(m.label)}</option>`)
@@ -1193,6 +1469,10 @@ onChange("#closeToTray", (el) => ({ close_to_tray: el.checked }));
 onChange("#minToTray", (el) => ({ minimize_to_tray: el.checked }));
 onChange("#beep", (el) => ({ beep: el.checked }));
 onChange("#audio", (el) => ({ audio: el.checked }));
+onChange("#discordTrack", (el) => ({ discord_track: el.checked }));
+onChange("#mic", (el) => ({ mic: el.checked }));
+onChange("#micDevice", (el) => ({ mic_device: el.value }));
+$$("#audioSource button").forEach((b) => b.addEventListener("click", () => setCfg({ audio_source: b.dataset.v })));
 onChange("#gentleSave", (el) => ({ gentle_save: el.checked }));
 onChange("#bufferRam", (el) => ({ buffer_in_ram: el.checked }));
 onChange("#height", (el) => ({ height: Number(el.value) }));

@@ -4,7 +4,7 @@
 use crate::config::{data_dir, BitrateUnit, CaptureMethod, CaptureMode, Codec, Config, Indicator};
 use crate::recorder::{self, Crop, RamBuf, RecordSpec, Recorder};
 use crate::win::{self, MonitorInfo, WinGeom};
-use crate::{library, overlay, tray};
+use crate::{audio, library, overlay, tray};
 use anyhow::{anyhow, bail, Result};
 use parking_lot::Mutex;
 use serde::Serialize;
@@ -68,6 +68,9 @@ struct Held {
     game: String,
     buffer_dir: PathBuf,
     ram: Option<Arc<RamBuf>>,
+    layout: Option<audio::Layout>,
+    /// When recording stopped (ms since epoch): clips end here.
+    ended_ms: u64,
     until: Instant,
     until_ms: u64,
 }
@@ -282,7 +285,10 @@ impl Engine {
                 };
 
                 match spec {
-                    Some(spec) => {
+                    Some(mut spec) => {
+                        // Game-only sound follows the recorded program (in games mode).
+                        let game_pid = tracked.as_ref().filter(|_| cfg.mode == CaptureMode::Games).map(|t| t.pid);
+                        spec.tracks = audio::plan(&cfg, game_pid);
                         status.fps = spec.fps;
                         status.region = Some(match (spec.window, spec.crop) {
                             (Some(_), _) if card => format!("{}×{} capture card", spec.src_w, spec.src_h),
@@ -376,7 +382,7 @@ impl Engine {
     /// Nothing to record any more. If a buffer was running, hold on to it for a while.
     fn keep_or_discard(&self, cfg: &Config) {
         let kept = self.recorder.lock().stop_and_keep();
-        let Some((dir, ram)) = kept else { return };
+        let Some(recorder::Kept { dir, ram, layout }) = kept else { return };
         if cfg.hold_minutes == 0 {
             if ram.is_none() {
                 let _ = recorder::clear_buffer(&dir);
@@ -389,6 +395,8 @@ impl Engine {
             game,
             buffer_dir: dir,
             ram,
+            layout,
+            ended_ms: now_ms(),
             until: Instant::now() + hold,
             until_ms: now_ms() + hold.as_millis() as u64,
         });
@@ -698,12 +706,14 @@ impl Engine {
 
     fn save_clip_inner(&self) -> Result<PathBuf> {
         let cfg = self.cfg.lock().clone();
-        let (ram, buffer_dir, game) = {
+        let (ram, buffer_dir, game, sound) = {
             let rec = self.recorder.lock();
             if let Some(spec) = rec.spec() {
-                (rec.ram(), spec.buffer_dir.clone(), self.status().game)
+                let sound = rec.layout().map(|l| l.pick(cfg.clip_seconds, now_ms()));
+                (rec.ram(), spec.buffer_dir.clone(), self.status().game, sound)
             } else if let Some(h) = self.held.lock().as_ref() {
-                (h.ram.clone(), h.buffer_dir.clone(), Some(h.game.clone()))
+                let sound = h.layout.as_ref().map(|l| l.pick(cfg.clip_seconds, h.ended_ms));
+                (h.ram.clone(), h.buffer_dir.clone(), Some(h.game.clone()), sound)
             } else {
                 return Err(anyhow!("Nothing is being recorded right now"));
             }
@@ -712,8 +722,8 @@ impl Engine {
         let stamp = chrono::Local::now().format("%Y-%m-%d_%H-%M-%S");
         let out = cfg.raw_dir().join(&game).join(format!("{game}_{stamp}.mp4"));
         match ram {
-            Some(r) => recorder::save_ram(&cfg.ffmpeg, &r, cfg.clip_seconds, &out, cfg.gentle_save)?,
-            None => recorder::save_buffer(&cfg.ffmpeg, &buffer_dir, cfg.clip_seconds, &out, cfg.gentle_save)?,
+            Some(r) => recorder::save_ram(&cfg.ffmpeg, &r, cfg.clip_seconds, &out, cfg.gentle_save, sound.as_deref())?,
+            None => recorder::save_buffer(&cfg.ffmpeg, &buffer_dir, cfg.clip_seconds, &out, cfg.gentle_save, sound.as_deref())?,
         }
         Ok(out)
     }
