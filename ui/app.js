@@ -268,6 +268,9 @@ $("#targetSel").addEventListener("change", (e) => {
 });
 
 function renderStatus(st) {
+  // The recorder just found out the NVIDIA driver is too old: show the download strip now.
+  const driverOld = /driver is too old/.test(st.error || "");
+  if (driverOld !== !!S.driverOld) { S.driverOld = driverOld; renderFfHints(); }
   S.status = st;
   const el = $("#status");
   el.classList.toggle("live", !!st.recording);
@@ -2039,7 +2042,7 @@ function fillControls(force = false) {
   set("#audioOffset", (el) => (el.value = c.audio_offset_ms));
   set("#clipsDir", (el) => (el.value = c.clips_dir));
   set("#bufferDir", (el) => (el.value = c.buffer_dir || ""));
-  set("#ffmpeg", (el) => (el.value = c.ffmpeg));
+  set("#ffmpeg", (el) => (el.value = ffShown(c.ffmpeg)));
   set("#hotkey", (el) => { if (!el.classList.contains("listening")) el.value = c.hotkey; });
   set("#hotkey2", (el) => { if (!el.classList.contains("listening")) el.value = c.hotkey2 || ""; });
 
@@ -2472,19 +2475,31 @@ async function downloadFfmpeg() {
 $("#getFfmpeg").addEventListener("click", downloadFfmpeg);
 $("#ffBannerBtn").addEventListener("click", downloadFfmpeg);
 
+// The location box shows the full path of the ffmpeg.exe in use, even when the setting is just
+// "ffmpeg" (found on PATH). The setting itself keeps following PATH until you type a path.
+function ffShown(setting) {
+  return S.ff?.ok && S.ff.path && S.ffFor === setting ? S.ff.path : setting;
+}
+
 async function renderFfHints() {
   if (ffBusy) return;
+  const setting = S.cfg?.ffmpeg;
   try {
     S.ff = await invoke("ffmpeg_info");
   } catch { S.ff = { ok: false }; }
+  S.ffFor = setting;
   const f = S.ff;
+  const box = $("#ffmpeg");
+  if (document.activeElement !== box) box.value = ffShown(setting);
   const old = !!f.ok && !(f.ddagrab && f.gfxcapture);
-  $("#getFfmpeg").hidden = !!f.ok && !old;
-  $("#getFfmpeg").textContent = old ? "Update FFmpeg" : "Download FFmpeg";
-  $("#ffBanner").hidden = !!f.ok && !old;
-  $("#ffBannerBtn").hidden = !!f.ok && !old;
-  $("#ffBannerBtn").textContent = old ? "Update FFmpeg" : "Download FFmpeg";
+  const fix = old || !!f.driver_too_old;
+  $("#getFfmpeg").hidden = !!f.ok && !fix;
+  $("#getFfmpeg").textContent = old ? "Update FFmpeg" : f.driver_too_old ? "Download FFmpeg again" : "Download FFmpeg";
+  $("#ffBanner").hidden = !!f.ok && !fix;
+  $("#ffBannerBtn").hidden = !!f.ok && !fix;
+  $("#ffBannerBtn").textContent = $("#getFfmpeg").textContent;
   if (old) $("#ffBannerText").textContent = "This FFmpeg is too old for TUFFClip (no window capture). Updating downloads a current one and keeps your old copy untouched.";
+  else if (f.driver_too_old) $("#ffBannerText").textContent = "Your NVIDIA driver is too old for this FFmpeg, so it can't record. Downloading again gets one that works with your driver (or update the driver).";
   if (!f.ok) {
     $("#ffBannerText").textContent = "FFmpeg isn't set up yet. TUFFClip needs it to record and export.";
     $("#ffHint").textContent = "FFmpeg wasn't found. Use the button above to download it, or enter the full path to ffmpeg.exe.";
@@ -2496,6 +2511,8 @@ async function renderFfHints() {
     : !f.gfxcapture
       ? `${f.version}. No gfxcapture filter (needs FFmpeg 8 full), so games are recorded from the display instead. Use "Download FFmpeg" for a current build.`
       : f.version;
+  if (f.path && !/[\\/]/.test(setting || "")) $("#ffHint").textContent += `. Found on PATH, so TUFFClip uses whichever ffmpeg.exe PATH points to.`;
+  if (f.driver_too_old) $("#ffHint").textContent += ". Your NVIDIA driver is too old for this build's NVENC: download FFmpeg again or update the driver.";
   $("#encHint").textContent = f.encoders.length
     ? `Your FFmpeg supports: ${f.encoders.map((e) => ({ nvenc: "NVIDIA", amf: "AMD", qsv: "Intel" }[e])).join(", ")}`
     : "This FFmpeg build has no hardware encoders.";

@@ -478,7 +478,13 @@ async fn export_clip(app: AppHandle, eng: Eng<'_>, req: export::ExportRequest) -
 #[tauri::command]
 async fn ffmpeg_info(eng: Eng<'_>) -> Result<ff::FfInfo, String> {
     let path = eng.cfg.lock().ffmpeg.clone();
-    tauri::async_runtime::spawn_blocking(move || ff::info(&path)).await.map_err(e2s)
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut info = ff::info(&path);
+        info.driver_too_old = recorder::nvenc_driver_too_old(&path);
+        info
+    })
+    .await
+    .map_err(e2s)
 }
 
 /// Download FFmpeg into TUFFClip's data folder and point the setting at it. Returns the new path.

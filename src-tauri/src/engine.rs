@@ -667,7 +667,9 @@ impl Engine {
             .lock()
             .map(|t| t.saturating_duration_since(Instant::now()).as_secs() + 1)
             .unwrap_or(0);
-        if s >= 3 {
+        if crate::recorder::nvenc_driver_too_old(&self.cfg.lock().ffmpeg) {
+            "Your NVIDIA driver is too old for this FFmpeg. Download FFmpeg again (Settings > Advanced) or update the driver.".into()
+        } else if s >= 3 {
             format!("FFmpeg keeps stopping with these settings. Trying again in {left}s. Check ffmpeg.log in the data folder.")
         } else {
             "Recording stopped. Restarting…".into()
@@ -691,6 +693,7 @@ impl Engine {
             if !stalled {
                 if up > Duration::from_secs(30) {
                     *self.strikes.lock() = 0;
+                    crate::recorder::clear_driver_too_old();
                 }
                 return Ok(());
             }

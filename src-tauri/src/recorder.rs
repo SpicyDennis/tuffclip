@@ -276,9 +276,23 @@ impl RamInner {
     }
 }
 
+/// The last ffmpeg run said the NVIDIA driver is older than its NVENC needs
+/// ("Driver does not support the required nvenc API version"). Cleared when the FFmpeg path changes.
+static DRIVER_TOO_OLD: Mutex<Option<String>> = Mutex::new(None);
+
+/// Whether the FFmpeg at `ffmpeg` failed because the NVIDIA driver is too old for it.
+pub fn nvenc_driver_too_old(ffmpeg: &str) -> bool {
+    DRIVER_TOO_OLD.lock().as_deref() == Some(ffmpeg)
+}
+
+/// A recording ran fine, so whatever the driver said before no longer holds (it was updated).
+pub fn clear_driver_too_old() {
+    *DRIVER_TOO_OLD.lock() = None;
+}
+
 /// ffmpeg's messages into the log, up to `LOG_CAP` per run: a warning repeated for hours must not
 /// fill the disk. Past the cap it keeps reading (and dropping) so ffmpeg never blocks on the pipe.
-fn copy_log(mut err: ChildStderr, mut log: fs::File) {
+fn copy_log(mut err: ChildStderr, mut log: fs::File, ffmpeg: String) {
     let mut buf = [0u8; 4096];
     let mut written = 0u64;
     loop {
@@ -286,6 +300,12 @@ fn copy_log(mut err: ChildStderr, mut log: fs::File) {
             Ok(0) | Err(_) => break,
             Ok(n) => n,
         };
+        if written < 16 << 10 {
+            // The driver check fails as ffmpeg opens the encoder, so it's near the start.
+            if String::from_utf8_lossy(&buf[..n]).contains("required nvenc API version") {
+                *DRIVER_TOO_OLD.lock() = Some(ffmpeg.clone());
+            }
+        }
         if written < LOG_CAP {
             let _ = log.write_all(&buf[..n]);
             written += n as u64;
@@ -421,7 +441,8 @@ impl Recorder {
             .with_context(|| format!("Couldn't start ffmpeg (\"{}\"). Is it installed?", spec.ffmpeg))?;
         win::tie_to_app(&child);
         if let Some(err) = child.stderr.take() {
-            std::thread::spawn(move || copy_log(err, log));
+            let ffmpeg = spec.ffmpeg.clone();
+            std::thread::spawn(move || copy_log(err, log, ffmpeg));
         }
 
         if spec.ram {

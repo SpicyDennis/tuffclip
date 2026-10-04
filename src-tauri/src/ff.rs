@@ -42,6 +42,10 @@ pub fn tail(s: &str) -> String {
 #[derive(Serialize, Default)]
 pub struct FfInfo {
     pub ok: bool,
+    /// The full path of the ffmpeg.exe that runs (a bare "ffmpeg" setting is looked up on PATH).
+    pub path: String,
+    /// The last recording failed because the NVIDIA driver is older than this FFmpeg's NVENC needs.
+    pub driver_too_old: bool,
     pub version: String,
     pub encoders: Vec<String>,
     pub ddagrab: bool,
@@ -107,6 +111,8 @@ pub fn info(ffmpeg: &str) -> FfInfo {
     let filters = grab(&["-hide_banner", "-filters"]).unwrap_or_default();
     FfInfo {
         ok: true,
+        path: resolve(ffmpeg).map(|p| p.to_string_lossy().into_owned()).unwrap_or_default(),
+        driver_too_old: false,
         version: ver.lines().next().unwrap_or("").to_string(),
         encoders: ["nvenc", "amf", "qsv"]
             .iter()
@@ -118,6 +124,23 @@ pub fn info(ffmpeg: &str) -> FfInfo {
         gpu_scale: filters.contains(" gfxcapture "),
         vp9: encoders.contains("libvpx-vp9"),
     }
+}
+
+/// Where `ffmpeg` really is: the file itself for a path, else the first match on PATH
+/// (the way Windows finds a bare "ffmpeg").
+pub fn resolve(ffmpeg: &str) -> Option<std::path::PathBuf> {
+    let p = std::path::Path::new(ffmpeg);
+    let with_exe = |p: &std::path::Path| -> Option<std::path::PathBuf> {
+        if p.is_file() {
+            return Some(p.to_path_buf());
+        }
+        let e = p.with_extension("exe");
+        e.is_file().then_some(e)
+    };
+    if p.components().count() > 1 || p.is_absolute() {
+        return with_exe(p);
+    }
+    std::env::split_paths(&std::env::var_os("PATH")?).find_map(|d| with_exe(&d.join(p)))
 }
 
 /// The video codec of a clip ("h264", "hevc", "vp9", ...), or "" if it can't be read.
@@ -154,39 +177,62 @@ pub fn clean_up(dir: &std::path::Path, current: &str) {
     }
 }
 
-const FFMPEG_URL: &str =
-    "https://github.com/BtbN/FFmpeg-Builds/releases/latest/download/ffmpeg-master-latest-win64-gpl.zip";
+/// Tried in order. 8.1 is a release branch built against NVENC API 13.0, which NVIDIA drivers 570
+/// and newer support; 9.0 and master need API 13.1 (driver 610+), and ffmpeg then refuses to
+/// record on older drivers ("Driver does not support the required nvenc API version"). It has
+/// gfxcapture with every option TUFFClip passes. The others are there in case BtbN drops 8.1.
+const FFMPEG_URLS: [&str; 3] = [
+    "https://github.com/BtbN/FFmpeg-Builds/releases/latest/download/ffmpeg-n8.1-latest-win64-gpl-8.1.zip",
+    "https://github.com/BtbN/FFmpeg-Builds/releases/latest/download/ffmpeg-n9.0-latest-win64-gpl-9.0.zip",
+    "https://github.com/BtbN/FFmpeg-Builds/releases/latest/download/ffmpeg-master-latest-win64-gpl.zip",
+];
+
+/// curl `url` to `zip`, reporting the bytes so far. On failure the partial file is removed.
+fn fetch(url: &str, zip: &std::path::Path, progress: &impl Fn(u64)) -> std::result::Result<(), String> {
+    let _ = std::fs::remove_file(zip);
+    let mut child = cmd("curl.exe")
+        .args(["-L", "--fail", "--silent", "--show-error", "-o"])
+        .arg(zip)
+        .arg(url)
+        .stdin(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("couldn't start curl: {e}"))?;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(s)) => break s,
+            Ok(None) => {}
+            Err(e) => return Err(e.to_string()),
+        }
+        progress(std::fs::metadata(zip).map(|m| m.len()).unwrap_or(0));
+        std::thread::sleep(std::time::Duration::from_millis(500));
+    };
+    if status.success() {
+        return Ok(());
+    }
+    let mut err = String::new();
+    if let Some(mut s) = child.stderr.take() {
+        use std::io::Read;
+        let _ = s.read_to_string(&mut err);
+    }
+    let _ = std::fs::remove_file(zip);
+    Err(tail(&err))
+}
 
 /// Download a full FFmpeg build into `dir` (using the curl.exe and tar.exe that ship with Windows 10+)
 /// and return the path to ffmpeg.exe. `progress` gets the bytes downloaded so far.
 pub fn download(dir: &std::path::Path, progress: impl Fn(u64)) -> Result<std::path::PathBuf> {
     std::fs::create_dir_all(dir)?;
     let zip = dir.join("ffmpeg.zip");
-    let _ = std::fs::remove_file(&zip);
-
-    let mut child = cmd("curl.exe")
-        .args(["-L", "--fail", "--silent", "--show-error", "-o"])
-        .arg(&zip)
-        .arg(FFMPEG_URL)
-        .stdin(Stdio::null())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| anyhow::anyhow!("couldn't start curl: {e}"))?;
-    let status = loop {
-        if let Some(s) = child.try_wait()? {
-            break s;
+    let mut result = Err(String::new());
+    for url in FFMPEG_URLS {
+        result = fetch(url, &zip, &progress);
+        if result.is_ok() {
+            break;
         }
-        progress(std::fs::metadata(&zip).map(|m| m.len()).unwrap_or(0));
-        std::thread::sleep(std::time::Duration::from_millis(500));
-    };
-    if !status.success() {
-        let mut err = String::new();
-        if let Some(mut s) = child.stderr.take() {
-            use std::io::Read;
-            let _ = s.read_to_string(&mut err);
-        }
-        let _ = std::fs::remove_file(&zip);
-        bail!("download failed: {}", tail(&err));
+    }
+    if let Err(e) = result {
+        bail!("download failed: {e}");
     }
 
     let unpack = dir.join("unpack");
@@ -220,4 +266,18 @@ pub fn download(dir: &std::path::Path, progress: impl Fn(u64)) -> Result<std::pa
     std::fs::rename(&src, &dest)?;
     let _ = std::fs::remove_dir_all(&unpack);
     Ok(dest)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::resolve;
+
+    #[test]
+    fn resolve_finds_bare_names_on_path_and_keeps_full_paths() {
+        let cmd = resolve("cmd").expect("cmd.exe is on PATH");
+        assert!(cmd.is_absolute() && cmd.ends_with("cmd.exe"));
+        assert_eq!(resolve(&cmd.to_string_lossy()), Some(cmd));
+        assert_eq!(resolve(r"C:\nowhere\ffmpeg.exe"), None);
+        assert_eq!(resolve("surely-not-a-program-xyz"), None);
+    }
 }
