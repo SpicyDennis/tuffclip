@@ -10,7 +10,9 @@ use parking_lot::Mutex;
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
 use std::panic::{catch_unwind, AssertUnwindSafe};
-use std::path::PathBuf;
+use std::fs;
+use std::io::Write;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering::SeqCst};
 use std::sync::Arc;
 use std::thread;
@@ -107,6 +109,14 @@ pub struct Engine {
 
 fn log_path() -> PathBuf {
     data_dir().join("ffmpeg.log")
+}
+
+/// Write a failed clip save to ffmpeg.log (the toast alone is gone once it fades).
+fn note_save_error(out: &Path, e: &anyhow::Error) {
+    if let Ok(mut log) = fs::OpenOptions::new().create(true).append(true).open(log_path()) {
+        let _ = writeln!(log, "
+=== {} | Saving {} failed: {e:#}", chrono::Local::now(), out.display());
+    }
 }
 
 pub fn sanitize_name(s: &str) -> String {
@@ -825,9 +835,15 @@ impl Engine {
         let game = sanitize_name(&game.unwrap_or_else(|| "Desktop".into()));
         let stamp = chrono::Local::now().format("%Y-%m-%d_%H-%M-%S");
         let out = cfg.raw_dir().join(&game).join(format!("{game}_{stamp}.mp4"));
-        match ram {
-            Some(r) => recorder::save_ram(&cfg.ffmpeg, &r, cfg.clip_seconds, &out, cfg.gentle_save, sound.as_deref())?,
-            None => recorder::save_buffer(&cfg.ffmpeg, &buffer_dir, cfg.clip_seconds, &out, cfg.gentle_save, sound.as_deref())?,
+        let res = match ram {
+            Some(r) => recorder::save_ram(&cfg.ffmpeg, &r, cfg.clip_seconds, &out, cfg.gentle_save, sound.as_deref()),
+            None => recorder::save_buffer(&cfg.ffmpeg, &buffer_dir, cfg.clip_seconds, &out, cfg.gentle_save, sound.as_deref()),
+        };
+        if let Err(e) = res {
+            // A failed save may leave an empty or broken file; it must not show up as a clip.
+            let _ = fs::remove_file(&out);
+            note_save_error(&out, &e);
+            return Err(e);
         }
         Ok(out)
     }

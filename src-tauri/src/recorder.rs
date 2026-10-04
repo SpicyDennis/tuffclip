@@ -668,6 +668,11 @@ fn build_args(s: &RecordSpec) -> Vec<String> {
     a
 }
 
+/// How much of the buffer a save reads to identify its streams. ffmpeg's default (5 MB) is
+/// a third of a second at 1440p165, which can hold no packet of a sound track; ffmpeg then
+/// can't write the mp4 header and leaves an empty file ("sample rate not set").
+const PROBE: [&str; 4] = ["-probesize", "100M", "-analyzeduration", "10M"];
+
 fn prepare_out(out: &Path) -> Result<()> {
     if let Some(dir) = out.parent() {
         fs::create_dir_all(dir)?;
@@ -726,7 +731,9 @@ pub fn save_buffer(ffmpeg: &str, buffer_dir: &Path, seconds: u32, out: &Path, ge
     prepare_out(out)?;
 
     let mut c = if gentle { ff::cmd_low(ffmpeg) } else { ff::cmd(ffmpeg) };
-    c.args(["-hide_banner", "-loglevel", "error", "-y", "-f", "concat", "-safe", "0", "-i"])
+    c.args(["-hide_banner", "-loglevel", "error", "-y"])
+        .args(PROBE)
+        .args(["-f", "concat", "-safe", "0", "-i"])
         .arg(&list)
         .args(["-map", "0:v:0"])
         .args(audio_maps(sound))
@@ -747,9 +754,9 @@ pub fn save_ram(ffmpeg: &str, ram: &RamBuf, seconds: u32, out: &Path, gentle: bo
     prepare_out(out)?;
 
     let mut c = if gentle { ff::cmd_low(ffmpeg) } else { ff::cmd(ffmpeg) };
-    c.args([
-        "-hide_banner", "-loglevel", "error", "-y", "-f", "mpegts", "-i", "pipe:0", "-map", "0:v:0",
-    ])
+    c.args(["-hide_banner", "-loglevel", "error", "-y"])
+    .args(PROBE)
+    .args(["-f", "mpegts", "-i", "pipe:0", "-map", "0:v:0"])
     .args(audio_maps(sound))
     .args(["-c", "copy", "-avoid_negative_ts", "make_zero", "-movflags", "+faststart"])
     .arg(out)
