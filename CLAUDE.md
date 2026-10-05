@@ -8,7 +8,7 @@ TUFFClip is a Windows-only replay-buffer clipper built with Tauri 2 (Rust core +
 
 ## Working on changes
 
-For every batch of requested changes: load the **suite-design** skill first (UI rules, and its "Versioning" section), follow it, and bump the version before finishing. The version lives in `src-tauri/Cargo.toml` and `src-tauri/tauri.conf.json` (keep them equal; `Cargo.lock` follows on the next build). If a change produces a UI pattern the skill doesn't cover yet, add it to the skill.
+For every batch of requested changes: load the **suite-design** skill first (UI rules, and its "Versioning" section), follow it, and bump the version before finishing. The version lives in `src-tauri/Cargo.toml` and `src-tauri/tauri.conf.json` (keep them equal; `Cargo.lock` follows on the next build). `README.md` writes the exe name as `TUFFClip v<version>.exe` in two places (Install, Build from source): update both on every bump. If a change produces a UI pattern the skill doesn't cover yet, add it to the skill.
 
 ## Commands
 
